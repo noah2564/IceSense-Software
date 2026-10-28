@@ -1,0 +1,417 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/ice-sensing/1.0.0/message.schema.json",
+  "title": "HVAC Ice-Sensing Device Message",
+  "description": "Envelope + payload for all messages sent between an ESP32 ice-sensing node (capacitive / resistive / impedance / thermal sensing of frost and ice on HVAC coils) and the backend. RULES: (1) Omit unavailable fields; never send null or NaN. (2) All timestamps are UTC epoch milliseconds. (3) Units are encoded in field-name suffixes (_pf, _ohm, _c, _hz, _ms, _pct, ...). (4) Unknown fields are rejected except top-level 'x_' vendor extensions. (5) Additive changes bump the minor version, breaking changes the major version.",
+  "type": "object",
+  "required": ["schema_version", "message_type", "message_id", "device_id", "seq", "ts"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^1\\.\\d+\\.\\d+$",
+      "description": "Semantic version of this schema, e.g. 1.0.0"
+    },
+    "message_type": {
+      "type": "string",
+      "enum": ["telemetry", "event", "status", "command", "command_ack", "calibration"]
+    },
+    "message_id": {
+      "$ref": "#/$defs/id",
+      "description": "Unique per message (UUID or device_id + boot_count + seq). Used for de-duplication."
+    },
+    "device_id": {
+      "$ref": "#/$defs/id",
+      "description": "Stable unique device identity (e.g. derived from ESP32 eFuse MAC)."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Per-device message counter, restarting at 0 on every boot, so (boot_count, seq) is unique. Gaps within one boot indicate lost messages."
+    },
+    "boot_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Incremented on every boot; (boot_count, seq) is unique."
+    },
+    "ts": { "$ref": "#/$defs/epoch_ms", "description": "Time the message was created on the device." },
+    "ts_source": {
+      "type": "string",
+      "enum": ["ntp", "sntp", "rtc", "gps", "server_sync", "manual", "uptime_only"],
+      "description": "How trustworthy ts is. 'uptime_only' means ts is not wall-clock; use uptime_ms."
+    },
+    "uptime_ms": { "type": "integer", "minimum": 0 },
+    "firmware": { "$ref": "#/$defs/firmware" },
+    "config_version": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Version of the configuration active when the message was produced."
+    },
+    "in_reply_to": { "$ref": "#/$defs/id", "description": "command_id this message answers, if any." },
+    "buffered": {
+      "type": "boolean",
+      "description": "True if the message was stored on the device and sent late (ts is then older than arrival time)."
+    },
+    "telemetry": { "$ref": "#/$defs/telemetry" },
+    "event": { "$ref": "#/$defs/event" },
+    "status": { "$ref": "#/$defs/status" },
+    "command": { "$ref": "#/$defs/command" },
+    "command_ack": { "$ref": "#/$defs/command_ack" },
+    "calibration": { "$ref": "#/$defs/calibration" }
+  },
+  "patternProperties": { "^x_": {} },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "message_type": { "const": "telemetry" } } },
+      "then": { "required": ["telemetry"] }
+    },
+    {
+      "if": { "properties": { "message_type": { "const": "event" } } },
+      "then": { "required": ["event"] }
+    },
+    {
+      "if": { "properties": { "message_type": { "const": "status" } } },
+      "then": { "required": ["status"] }
+    },
+    {
+      "if": { "properties": { "message_type": { "const": "command" } } },
+      "then": { "required": ["command"] }
+    },
+    {
+      "if": { "properties": { "message_type": { "const": "command_ack" } } },
+      "then": { "required": ["command_ack"] }
+    },
+    {
+      "if": { "properties": { "message_type": { "const": "calibration" } } },
+      "then": { "required": ["calibration"] }
+    }
+  ],
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$" },
+    "epoch_ms": { "type": "integer", "minimum": 0, "description": "UTC milliseconds since 1970-01-01T00:00:00Z" },
+    "firmware": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "string", "maxLength": 32 },
+        "idf_version": { "type": "string", "maxLength": 32 },
+        "chip": { "type": "string", "enum": ["ESP32", "ESP32-S2", "ESP32-S3", "ESP32-C3", "ESP32-C6", "other"] }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["good", "uncertain", "bad", "substituted", "stale", "calibrating", "disabled"]
+        },
+        "flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["saturated", "adc_clipped", "open_circuit", "short_circuit", "out_of_range", "noisy", "drifting", "stuck_value", "emi_suspected", "mains_interference", "wet_electrode", "condensation_suspected", "temperature_out_of_range", "baseline_invalid", "baseline_stale", "timing_jitter", "sensor_disconnected", "low_supply", "reference_out_of_tolerance", "compensation_unavailable", "interpolated"]
+          }
+        }
+      }
+    },
+    "statistics": {
+      "type": "object",
+      "description": "Statistics over the sampling window for the primary value of the channel.",
+      "additionalProperties": false,
+      "properties": {
+        "n": { "type": "integer", "minimum": 0 },
+        "mean": { "type": "number" },
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "std": { "type": "number", "minimum": 0 }
+      }
+    },
+    "capacitive": {
+      "type": "object",
+      "description": "Capacitive sensing result. Ice (eps_r ~3.2) vs water (eps_r ~80) vs air (~1) changes the measured capacitance in distinguishable ways.",
+      "additionalProperties": false,
+      "properties": {
+        "raw_counts": {
+          "type": "number",
+          "description": "Raw value of the sensing peripheral (touch counts, CDC code, ADC code)."
+        },
+        "delta_pct": { "type": "number", "description": "Relative change vs baseline." }
+      }
+    },
+    "resistive": {
+      "type": "object",
+      "description": "Resistive / conductive sensing result (liquid water film vs ice vs dry surface).",
+      "additionalProperties": false,
+      "properties": {
+        "voltage_v": { "type": "number" },
+        "resistance_ohm": { "type": "number", "minimum": 0 },
+        "delta_pct": { "type": "number" },
+        "baseline_ohm": { "type": "number", "minimum": 0 },
+        "log10_resistance": {
+          "type": "number",
+          "description": "Handy when resistance spans many decades (dry vs wet vs frozen)."
+        },
+        "open_circuit": { "type": "boolean" },
+        "short_circuit": { "type": "boolean" }
+      }
+    },
+    "thermal": {
+      "type": "object",
+      "description": "Temperature reading. Surface/coil temperature is the key context for interpreting ice sensing.",
+      "additionalProperties": false,
+      "properties": {
+        "temperature_c": { "type": "number", "minimum": -273.15 },
+        "sensor_type": {
+          "type": "string",
+          "enum": ["ntc", "ptc", "rtd_pt100", "rtd_pt1000", "thermocouple_k", "thermocouple_t", "ds18b20", "sht_digital", "tmp117", "esp32_internal", "other"]
+        },
+        "location": {
+          "type": "string",
+          "enum": ["air_inlet", "air_outlet", "coil_surface", "fin", "refrigerant_suction", "refrigerant_liquid", "refrigerant_discharge", "drain_pan", "ambient", "enclosure", "pcb", "electrode", "other"]
+        },
+        "resistance_ohm": { "type": "number", "minimum": 0 },
+        "ntc_beta": { "type": "number" },
+        "below_freezing": { "type": "boolean" }
+      }
+    },
+    "channel": {
+      "type": "object",
+      "description": "One measurement channel (an electrode + front-end + conversion) in the reporting window.",
+      "required": ["channel_id", "kind"],
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": { "$ref": "#/$defs/id" },
+        "kind": {
+          "type": "string",
+          "enum": ["capacitive", "resistive", "impedance", "temperature", "humidity", "pressure", "differential_pressure", "airflow", "current", "voltage", "vibration", "optical", "acoustic", "digital_input", "composite", "other"]
+        },
+        "capacitive": { "$ref": "#/$defs/capacitive" },
+        "resistive": { "$ref": "#/$defs/resistive" },
+        "thermal": { "$ref": "#/$defs/thermal" },
+        "statistics": { "$ref": "#/$defs/statistics" },
+        "quality": { "$ref": "#/$defs/quality" }
+      }
+    },
+    "window": {
+      "type": "object",
+      "description": "Time window the telemetry values refer to.",
+      "required": ["start_ts", "end_ts"],
+      "additionalProperties": false,
+      "properties": {
+        "start_ts": { "$ref": "#/$defs/epoch_ms" },
+        "end_ts": { "$ref": "#/$defs/epoch_ms" },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "sample_rate_hz": { "type": "number", "exclusiveMinimum": 0 },
+        "sample_count": { "type": "integer", "minimum": 0 },
+        "aggregation": {
+          "type": "string",
+          "enum": ["instant", "mean", "median", "min", "max", "rms", "decimated", "raw_block", "mixed"]
+        },
+        "trigger": {
+          "type": "string",
+          "enum": ["periodic", "on_change", "on_threshold", "on_command", "on_hvac_event", "on_boot", "adaptive_fast"]
+        }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "required": ["window", "channels"],
+      "additionalProperties": false,
+      "properties": {
+        "window": { "$ref": "#/$defs/window" },
+        "channels": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/channel" } },
+        "status_summary": {
+          "type": "object",
+          "description": "Minimal health data piggybacked on telemetry so that a separate status message is not needed every window.",
+          "additionalProperties": false,
+          "properties": {
+            "rssi_dbm": { "type": "integer", "maximum": 0 },
+            "free_heap_bytes": { "type": "integer", "minimum": 0 },
+            "queue_depth": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": ["event_type", "severity"],
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "type": "string",
+          "enum": ["ice_detected", "ice_cleared", "frost_detected", "frost_cleared", "ice_state_changed", "defrost_recommended", "defrost_started", "defrost_ended", "hvac_mode_changed", "coil_blocked", "threshold_crossed", "rapid_change", "baseline_updated", "baseline_drift_warning", "sensor_fault", "sensor_recovered", "electrode_damage_suspected", "calibration_required", "calibration_started", "calibration_completed", "connectivity_lost", "connectivity_restored", "time_sync_lost", "time_synced", "buffer_overflow", "brownout", "low_supply", "watchdog_reset", "reset", "boot", "config_changed", "ota_started", "ota_completed", "ota_failed", "ota_rolled_back", "self_test_failed", "tamper", "other"]
+        },
+        "severity": { "type": "string", "enum": ["debug", "info", "notice", "warning", "alarm", "critical"] },
+        "state": {
+          "type": "string",
+          "enum": ["instant", "raised", "ongoing", "cleared"],
+          "description": "Alarm lifecycle: 'raised' when condition starts, 'cleared' when it ends."
+        },
+        "message": { "type": "string", "maxLength": 256 },
+        "details": {
+          "type": "object",
+          "description": "Free-form extra data for the event.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "connectivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "link": { "type": "string", "enum": ["wifi", "ethernet", "cellular", "lora", "ble", "thread", "none"] },
+        "connected": { "type": "boolean" },
+        "rssi_dbm": { "type": "integer", "maximum": 0 },
+        "reconnect_count": { "type": "integer", "minimum": 0 },
+        "transport": { "type": "string", "enum": ["mqtt", "https", "websocket", "coap", "tcp", "other"] },
+        "broker_connected": { "type": "boolean" },
+        "tx_messages": { "type": "integer", "minimum": 0 },
+        "tx_failures": { "type": "integer", "minimum": 0 },
+        "tls": { "type": "boolean" }
+      }
+    },
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "free_heap_bytes": { "type": "integer", "minimum": 0 },
+        "min_free_heap_bytes": { "type": "integer", "minimum": 0 },
+        "cpu_freq_mhz": { "type": "integer", "minimum": 0 },
+        "reset_reason": {
+          "type": "string",
+          "enum": ["power_on", "software", "panic", "int_watchdog", "task_watchdog", "other_watchdog", "deep_sleep_wake", "brownout", "external_pin", "sdio", "unknown"]
+        }
+      }
+    },
+    "buffering": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "storage": { "type": "string", "enum": ["ram", "flash", "sd_card", "none"] },
+        "queued_messages": { "type": "integer", "minimum": 0 },
+        "capacity_messages": { "type": "integer", "minimum": 0 },
+        "dropped_messages": { "type": "integer", "minimum": 0 },
+        "overflow_policy": { "type": "string", "enum": ["drop_oldest", "drop_newest", "downsample", "stop"] }
+      }
+    },
+    "sensor_status": {
+      "type": "object",
+      "required": ["channel_id", "state"],
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": { "$ref": "#/$defs/id" },
+        "state": { "type": "string", "enum": ["ok", "degraded", "fault", "disabled", "calibrating", "not_present"] },
+        "error_count": { "type": "integer", "minimum": 0 },
+        "baseline_valid": { "type": "boolean" }
+      }
+    },
+    "status": {
+      "type": "object",
+      "description": "Periodic device health report (also used as heartbeat with only 'health' set).",
+      "required": ["health"],
+      "additionalProperties": false,
+      "properties": {
+        "health": { "type": "string", "enum": ["ok", "degraded", "fault", "starting", "shutting_down"] },
+        "connectivity": { "$ref": "#/$defs/connectivity" },
+        "system": { "$ref": "#/$defs/system" },
+        "buffering": { "$ref": "#/$defs/buffering" },
+        "sensors": { "type": "array", "items": { "$ref": "#/$defs/sensor_status" } }
+      }
+    },
+    "channel_config": {
+      "type": "object",
+      "required": ["channel_id"],
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": { "$ref": "#/$defs/id" },
+        "sample_rate_hz": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "config": {
+      "type": "object",
+      "description": "Effective device configuration (reported by the device, or sent inside a set_config command).",
+      "additionalProperties": false,
+      "properties": {
+        "config_version": { "type": "integer", "minimum": 0 },
+        "reporting": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "telemetry_interval_s": { "type": "number", "exclusiveMinimum": 0 } }
+        },
+        "channels": { "type": "array", "items": { "$ref": "#/$defs/channel_config" } }
+      }
+    },
+    "command": {
+      "type": "object",
+      "description": "Backend -> device. Device must answer with command_ack carrying the same command_id.",
+      "required": ["command_id", "command_type"],
+      "additionalProperties": false,
+      "properties": {
+        "command_id": { "$ref": "#/$defs/id" },
+        "command_type": {
+          "type": "string",
+          "enum": ["set_config", "get_config", "get_status", "trigger_measurement", "request_waveform", "request_spectrum", "start_impedance_sweep", "start_calibration", "capture_baseline", "reset_baseline", "set_reference_point", "run_self_test", "run_diagnostic", "flush_buffer", "set_time", "identify", "reboot", "factory_reset", "start_ota", "abort_ota", "set_output", "ack_event"]
+        },
+        "issued_ts": { "$ref": "#/$defs/epoch_ms" },
+        "expires_ts": { "$ref": "#/$defs/epoch_ms", "description": "Device must ignore the command after this time." },
+        "priority": { "type": "string", "enum": ["low", "normal", "high"] },
+        "issued_by": { "type": "string", "maxLength": 64 },
+        "params": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Command-specific parameters (see protocol document)."
+        },
+        "config": { "$ref": "#/$defs/config", "description": "Payload for set_config." }
+      }
+    },
+    "command_ack": {
+      "type": "object",
+      "required": ["command_id", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "command_id": { "$ref": "#/$defs/id" },
+        "result": {
+          "type": "string",
+          "enum": ["accepted", "in_progress", "completed", "rejected", "failed", "expired", "unsupported"]
+        },
+        "error_code": { "type": "string", "maxLength": 32 },
+        "message": { "type": "string", "maxLength": 256 },
+        "applied_config_version": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "description": "Result of a calibration or baseline capture.",
+      "required": ["calibration_type", "channel_id", "state"],
+      "additionalProperties": false,
+      "properties": {
+        "calibration_type": {
+          "type": "string",
+          "enum": ["baseline_dry", "baseline_clear_cold", "zero_offset", "gain", "reference_capacitor", "reference_resistor", "temperature_compensation", "ice_reference", "water_reference", "multi_point", "adc_calibration", "parasitic_capacitance"]
+        },
+        "channel_id": { "$ref": "#/$defs/id" },
+        "state": { "type": "string", "enum": ["started", "in_progress", "completed", "failed", "aborted"] },
+        "method": { "type": "string", "enum": ["automatic", "manual", "commanded"] },
+        "performed_ts": { "$ref": "#/$defs/epoch_ms" },
+        "conditions": {
+          "type": "object",
+          "description": "Conditions during calibration; essential to interpret the baseline.",
+          "additionalProperties": false,
+          "properties": { "coil_surface_temperature_c": { "type": "number" } }
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baseline_value": { "type": "number" },
+            "baseline_unit": { "type": "string", "maxLength": 16 },
+            "noise_floor": { "type": "number", "minimum": 0 },
+            "samples_used": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}
