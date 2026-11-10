@@ -1,0 +1,7 @@
+data/
+.pio/
+secrets.h
+hostcheck/.deps/
+hostcheck/.harness
+hostcheck/out.tsv
+hostcheck/err.log

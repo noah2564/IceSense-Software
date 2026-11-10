@@ -1,0 +1,6 @@
+# Research-phase broker only. The device does not need it (it works standalone).
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports: ["1883:1883"]
+    volumes: ["./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"]

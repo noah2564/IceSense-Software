@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ICE-SENSE</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1b1f24;--mut:#667085;--line:#e3e6ea;--ok:#1a7f4b;--warn:#b25e09;--bad:#c0262d;--ice:#1c6fd1;--acc:#1c6fd1}
+@media (prefers-color-scheme:dark){:root{--bg:#14171b;--card:#1d2127;--fg:#e8eaed;--mut:#98a2b3;--line:#2d333b;--ok:#4cc38a;--warn:#f0a04b;--bad:#ff6b6b;--ice:#5aa2ff;--acc:#5aa2ff}}
+a{color:inherit;text-decoration:none}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+main{max-width:900px;margin:0 auto;padding:16px}
+h1{font-size:18px;margin:0}header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.mut{color:var(--mut);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px}
+.top{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:560px){.top{grid-template-columns:1fr}}
+.badge{display:inline-block;padding:4px 12px;border-radius:999px;font-weight:600;font-size:20px;background:var(--line)}
+.s-clear{background:color-mix(in srgb,var(--ok) 20%,transparent);color:var(--ok)}
+.s-condensation,.s-melting{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
+.s-frost,.s-ice{background:color-mix(in srgb,var(--ice) 22%,transparent);color:var(--ice)}
+.big{font-size:32px;font-weight:600}.unit{font-size:15px;font-weight:400;color:var(--mut)}
+.row{display:flex;justify-content:space-between;gap:8px;padding:3px 0}
+.defrost{margin-top:8px;font-weight:600;padding:6px 10px;border-radius:8px;border:1px solid var(--line)}
+.defrost.on{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad);border-color:var(--bad)}
+canvas{width:100%;height:150px;display:block}
+button,input,select{font:inherit;color:inherit}
+button{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button:disabled{opacity:.5;cursor:default}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.params{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px}
+.params label{display:flex;flex-direction:column;font-size:12px;color:var(--mut)}
+.params input{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:5px 7px;font-size:14px}
+.note{font-size:13px;color:var(--mut);margin-top:6px}
+#msg{min-height:1.4em;font-size:13px}.err{color:var(--bad)}
+details summary{cursor:pointer;font-weight:600}
+</style>
+</head>
+<body>
+<main>
+<header><h1>ICE-SENSE <span class="mut" id="dev"></span></h1><span class="mut" id="conn">connecting&hellip;</span></header>
+
+<div class="top">
+  <section class="card">
+    <div class="mut">Ice state</div>
+    <div style="margin:6px 0"><span class="badge" id="state">&ndash;</span></div>
+    <div class="big"><span id="thick">&ndash;</span> <span class="unit">mm</span></div>
+    <div class="mut">thickness estimate &middot; <b>not calibrated</b>: use as a relative indicator</div>
+    <div class="defrost" id="defrost">Defrost request: &ndash;</div>
+  </section>
+  <section class="card">
+    <div class="mut" style="margin-bottom:4px">Live values</div>
+    <div class="row"><span>Capacitance change</span><b><span id="cap">&ndash;</span> %</b></div>
+    <div class="row"><span>Resistance</span><b><span id="res">&ndash;</span> <span class="unit" id="resu">log10 &Omega;</span></b></div>
+    <div class="row"><span>Coil temperature</span><b><span id="temp">&ndash;</span> &deg;C</b></div>
+    <div class="row"><span>Baseline</span><b id="base">&ndash;</b></div>
+    <div class="row"><span>Relay output</span><b id="relay">&ndash;</b></div>
+    <div class="row"><span>Uptime</span><b id="up">&ndash;</b></div>
+  </section>
+</div>
+
+<section class="card">
+  <div class="mut">Last <span id="span">&ndash;</span></div>
+  <canvas id="c1"></canvas><canvas id="c2"></canvas><canvas id="c3"></canvas>
+  <div class="btns"><a href="/api/history.csv" download="ice-sense-history.csv"><button>Download CSV</button></a></div>
+</section>
+
+<section class="card">
+  <b>Calibration &amp; output</b>
+  <div class="note">1. Make sure the sensor is clean and dry (no deposit). 2. Capture baseline. All capacitance changes are measured against it. It is stored on the device.</div>
+  <div class="btns">
+    <button class="primary" id="bBase">Capture baseline (sensor clean &amp; dry)</button>
+    <button id="bRelay">Relay: &ndash;</button>
+  </div>
+  <div class="note">The relay is a defrost <i>request</i> contact. It is disabled by default. Enable it only after the thresholds have been checked on the real evaporator.</div>
+  <div id="msg"></div>
+</section>
+
+<section class="card">
+  <details>
+    <summary>Detection parameters <span class="mut">(placeholders until calibrated)</span></summary>
+    <div class="params" id="params" style="margin-top:10px"></div>
+    <div class="btns"><button class="primary" id="bSave">Apply &amp; save</button><button id="bDef">Restore defaults</button></div>
+  </details>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const fmt=(v,d=1)=>v==null?"–":Number(v).toFixed(d);
+let cur=null, paramsBuilt=false;
+
+function say(t,bad){const m=$("msg");m.textContent=t;m.className=bad?"err":"";}
+async function api(path,body){
+  const o=body===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)};
+  const r=await fetch(path,o);
+  if(!r.ok) throw new Error((await r.text())||r.status);
+  return r.json();
+}
+function hms(s){s=Math.floor(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?`${h} h ${m} min`:m?`${m} min ${s%60} s`:`${s} s`;}
+
+function render(s){
+  cur=s;
+  $("dev").textContent=s.device_id+(s.simulated?" (simulator)":"");
+  const b=$("state");b.textContent=s.state_name;b.className="badge s-"+s.state_name;
+  $("thick").textContent=s.state===0?"–":fmt(s.thickness_mm,1);
+  const d=$("defrost");d.textContent="Defrost request: "+(s.state===0?"no judgement (state unknown)":s.defrost_request?"YES":"no");
+  d.className="defrost"+(s.defrost_request?" on":"");
+  $("cap").textContent=fmt(s.raw.cap_delta_pct,1);
+  $("res").textContent=fmt(s.raw.res_log10,2);
+  $("temp").textContent=fmt(s.raw.temp_c,1);
+  $("base").textContent=s.baseline.captured?"captured ("+Math.round(s.baseline.cap_counts)+" counts)":"NOT captured";
+  $("relay").textContent=s.relay.enabled?(s.relay.on?"enabled, ON":"enabled, off"):"disabled";
+  $("bRelay").textContent="Relay: "+(s.relay.enabled?"disable":"enable");
+  $("up").textContent=hms(s.uptime_s);
+  if(!paramsBuilt){buildParams(s.params);paramsBuilt=true;}
+}
+function buildParams(p){
+  const box=$("params");box.innerHTML="";
+  for(const k of Object.keys(p)){
+    const l=document.createElement("label");l.textContent=k;
+    const i=document.createElement("input");i.type="number";i.step="any";i.id="p_"+k;i.value=p[k];
+    l.appendChild(i);box.appendChild(l);
+  }
+}
+
+async function poll(){
+  try{render(await api("/api/state"));$("conn").textContent="live";$("conn").className="mut";}
+  catch(e){$("conn").textContent="no connection";$("conn").className="mut err";}
+}
+
+// ---- charts: plain canvas, no libraries ----
+function parseCsv(t){
+  const L=t.trim().split("\n");const h=L[0].split(",");
+  return L.slice(1).map(l=>{const c=l.split(",");const o={};h.forEach((k,i)=>o[k]=c[i]===""||c[i]==="nan"?null:isNaN(c[i])?c[i]:+c[i]);return o;});
+}
+function chart(cv,rows,key,label,color,fixed){
+  const dpr=devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;cv.width=w*dpr;cv.height=h*dpr;
+  const g=cv.getContext("2d");g.scale(dpr,dpr);g.clearRect(0,0,w,h);
+  const css=getComputedStyle(document.body);
+  const fg=css.getPropertyValue("--mut").trim(),line=css.getPropertyValue("--line").trim();
+  const pts=rows.filter(r=>r[key]!=null);
+  g.font="12px system-ui";g.fillStyle=fg;g.fillText(label,6,13);
+  if(pts.length<2)return;
+  let lo=Math.min(...pts.map(r=>r[key])),hi=Math.max(...pts.map(r=>r[key]));
+  if(fixed){lo=Math.min(lo,fixed[0]);hi=Math.max(hi,fixed[1]);}
+  if(hi-lo<1e-9){hi=lo+1;}
+  const pad=(hi-lo)*.08;lo-=pad;hi+=pad;
+  const t0=rows[0].uptime_s,t1=rows[rows.length-1].uptime_s||t0+1,L=44,R=6,T=18,B=6;
+  const X=t=>L+(t-t0)/(t1-t0||1)*(w-L-R),Y=v=>T+(1-(v-lo)/(hi-lo))*(h-T-B);
+  g.strokeStyle=line;g.lineWidth=1;
+  for(let i=0;i<=3;i++){const v=lo+(hi-lo)*i/3,y=Y(v);g.beginPath();g.moveTo(L,y);g.lineTo(w-R,y);g.stroke();g.fillStyle=fg;g.fillText(v.toFixed(Math.abs(hi-lo)<10?2:0),2,y+4);}
+  // shade windows with a defrost request
+  g.fillStyle=css.getPropertyValue("--bad").trim();g.globalAlpha=.12;
+  let on=null;rows.forEach((r,i)=>{if(r.defrost_request&&on===null)on=r.uptime_s;
+    if((!r.defrost_request||i===rows.length-1)&&on!==null){g.fillRect(X(on),T,X(r.uptime_s)-X(on),h-T-B);on=null;}});
+  g.globalAlpha=1;
+  g.strokeStyle=color;g.lineWidth=1.6;g.beginPath();
+  pts.forEach((r,i)=>{const x=X(r.uptime_s),y=Y(r[key]);i?g.lineTo(x,y):g.moveTo(x,y);});g.stroke();
+}
+async function history(){
+  try{
+    const r=await fetch("/api/history.csv");if(!r.ok)return;
+    const rows=parseCsv(await r.text());if(rows.length<2)return;
+    $("span").textContent=hms(rows[rows.length-1].uptime_s-rows[0].uptime_s);
+    const col=n=>getComputedStyle(document.body).getPropertyValue(n).trim();
+    chart($("c1"),rows,"cap_delta_pct","capacitance change (%)",col("--ice"),[0,10]);
+    chart($("c2"),rows,"res_log10","resistance (log10 Ω)",col("--warn"));
+    chart($("c3"),rows,"temp_c","coil temperature (°C)",col("--ok"),[-5,5]);
+  }catch(e){}
+}
+
+$("bBase").onclick=async()=>{
+  if(!confirm("Is the sensor clean and dry (no frost, ice or water)?"))return;
+  try{const r=await api("/api/baseline",{});say("Baseline captured: "+Math.round(r.baseline.cap_counts)+" counts.");poll();}
+  catch(e){say("Baseline failed: "+e.message,true);}
+};
+$("bRelay").onclick=async()=>{
+  if(!cur)return;
+  if(!cur.relay.enabled&&!confirm("Enable the relay output? It will switch whenever a defrost is requested."))return;
+  try{await api("/api/relay",{enabled:!cur.relay.enabled});poll();}catch(e){say("Relay: "+e.message,true);}
+};
+$("bSave").onclick=async()=>{
+  const body={};for(const k of Object.keys(cur.params))body[k]=parseFloat($("p_"+k).value);
+  try{const r=await api("/api/params",body);buildParams(r.params);say("Parameters saved.");}
+  catch(e){say("Rejected: "+e.message,true);}
+};
+$("bDef").onclick=async()=>{
+  if(!confirm("Restore default parameters?"))return;
+  try{const r=await api("/api/params/defaults",{});buildParams(r.params);say("Defaults restored.");}
+  catch(e){say("Failed: "+e.message,true);}
+};
+poll();history();setInterval(poll,1000);setInterval(history,5000);addEventListener("resize",history);
+</script>
+</body>
+</html>

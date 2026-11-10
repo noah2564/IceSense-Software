@@ -1,0 +1,7 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+secrets.h
+.pio/
+firmware/data/
+data/

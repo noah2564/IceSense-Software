@@ -1,0 +1,1230 @@
+/*
+  ICE-SENSING MESSAGE SCHEMA: source file  (edit THIS file, never the generated .json)
+
+  How it works
+    * JSON has no comments, so this is JSONC. `python3 build_schema.py` strips the comments and
+      writes ice-sensing.schema.json, which the server, the tests and the host check load.
+    * Every line starting with `//` is a property (or message type) that is switched OFF because
+      nothing sends or reads it yet. Only properties used by the current firmware, simulator and
+      server are active.
+    * To switch one on: delete the leading `// ` on its line(s), run build_schema.py.
+      Commas are safe either way (trailing commas are allowed in this file).
+    * A property whose value is a "$ref" needs that definition under "$defs" as well. The
+      definitions are all present; inside them every property is commented the same way, so
+      enable only the fields you need. build_schema.py refuses to build if a "required" entry
+      points at a property that is still commented out.
+    * `python3 build_schema.py --enable-all FILE` writes the complete schema (everything on).
+    * Enum VALUES (event types, quality flags, command types, ...) are not commented out. Only
+      property names and message types are, because those decide what a message may contain.
+
+  Contract rules (unchanged): omit unavailable fields, never null/NaN; timestamps are UTC epoch ms;
+  units are in the field names; unknown fields are rejected except top-level "x_" extensions.
+*/
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/ice-sensing/1.0.0/message.schema.json",
+  "title": "HVAC Ice-Sensing Device Message",
+  "description": "Envelope + payload for all messages sent between an ESP32 ice-sensing node (capacitive / resistive / impedance / thermal sensing of frost and ice on HVAC coils) and the backend. RULES: (1) Omit unavailable fields; never send null or NaN. (2) All timestamps are UTC epoch milliseconds. (3) Units are encoded in field-name suffixes (_pf, _ohm, _c, _hz, _ms, _pct, ...). (4) Unknown fields are rejected except top-level 'x_' vendor extensions. (5) Additive changes bump the minor version, breaking changes the major version.",
+  "type": "object",
+  "required": ["schema_version", "message_type", "message_id", "device_id", "seq", "ts"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^1\\.\\d+\\.\\d+$", "description": "Semantic version of this schema, e.g. 1.0.0" },
+    "message_type": {
+      "type": "string",
+      "enum": [
+        "telemetry",
+        "event",
+        "status",
+        // "heartbeat",
+        // "config",
+        "command",
+        "command_ack",
+        "calibration",
+        // "diagnostic",
+        // "log",
+      ]
+    },
+    "message_id": {
+      "$ref": "#/$defs/id",
+      "description": "Unique per message (UUID or device_id + boot_count + seq). Used for de-duplication."
+    },
+    "device_id": { "$ref": "#/$defs/id", "description": "Stable unique device identity (e.g. derived from ESP32 eFuse MAC)." },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Per-device message counter, restarting at 0 on every boot, so (boot_count, seq) is unique. Gaps within one boot indicate lost messages."
+    },
+    "boot_count": { "type": "integer", "minimum": 0, "description": "Incremented on every boot; (boot_count, seq) is unique." },
+    "ts": { "$ref": "#/$defs/epoch_ms", "description": "Time the message was created on the device." },
+    "ts_source": {
+      "type": "string",
+      "enum": ["ntp", "sntp", "rtc", "gps", "server_sync", "manual", "uptime_only"],
+      "description": "How trustworthy ts is. 'uptime_only' means ts is not wall-clock; use uptime_ms."
+    },
+    "uptime_ms": { "type": "integer", "minimum": 0 },
+    // "time_info": { "$ref": "#/$defs/time_info" },
+    // "asset": { "$ref": "#/$defs/asset" },
+    "firmware": { "$ref": "#/$defs/firmware" },
+    "config_version": { "type": "integer", "minimum": 0, "description": "Version of the configuration active when the message was produced." },
+    "in_reply_to": { "$ref": "#/$defs/id", "description": "command_id this message answers, if any." },
+    "buffered": {
+      "type": "boolean",
+      "description": "True if the message was stored on the device and sent late (ts is then older than arrival time)."
+    },
+    "telemetry": { "$ref": "#/$defs/telemetry" },
+    "event": { "$ref": "#/$defs/event" },
+    "status": { "$ref": "#/$defs/status" },
+    // "config": { "$ref": "#/$defs/config" },
+    "command": { "$ref": "#/$defs/command" },
+    "command_ack": { "$ref": "#/$defs/command_ack" },
+    "calibration": { "$ref": "#/$defs/calibration" },
+    // "diagnostic": { "$ref": "#/$defs/diagnostic" },
+    // "log": { "$ref": "#/$defs/log" },
+  },
+  "patternProperties": { "^x_": {} },
+  "additionalProperties": false,
+  "allOf": [
+    { "if": { "properties": { "message_type": { "const": "telemetry" } } }, "then": { "required": ["telemetry"] } },
+    { "if": { "properties": { "message_type": { "const": "event" } } }, "then": { "required": ["event"] } },
+    { "if": { "properties": { "message_type": { "const": "status" } } }, "then": { "required": ["status"] } },
+    // { "if": { "properties": { "message_type": { "const": "config" } } }, "then": { "required": ["config"] } },
+    { "if": { "properties": { "message_type": { "const": "command" } } }, "then": { "required": ["command"] } },
+    { "if": { "properties": { "message_type": { "const": "command_ack" } } }, "then": { "required": ["command_ack"] } },
+    { "if": { "properties": { "message_type": { "const": "calibration" } } }, "then": { "required": ["calibration"] } },
+    // { "if": { "properties": { "message_type": { "const": "diagnostic" } } }, "then": { "required": ["diagnostic"] } },
+    // { "if": { "properties": { "message_type": { "const": "log" } } }, "then": { "required": ["log"] } },
+  ],
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$" },
+    "epoch_ms": { "type": "integer", "minimum": 0, "description": "UTC milliseconds since 1970-01-01T00:00:00Z" },
+    "pct": { "type": "number", "minimum": 0, "maximum": 100 },
+    "unit_interval": { "type": "number", "minimum": 0, "maximum": 1 },
+    "time_info": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        // "last_sync_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "sync_age_s": { "type": "integer", "minimum": 0 },
+        // "offset_ms": { "type": "number", "description": "Last measured offset to the time server (device minus server)." },
+        // "drift_ppm": { "type": "number" },
+        // "ntp_server": { "type": "string", "maxLength": 128 },
+        // "synced": { "type": "boolean" },
+      }
+    },
+    "asset": {
+      "type": "object",
+      "description": "Where the device is installed and what it monitors.",
+      "additionalProperties": false,
+      "properties": {
+        // "site_id": { "$ref": "#/$defs/id" },
+        // "building": { "type": "string", "maxLength": 64 },
+        // "hvac_unit_id": { "$ref": "#/$defs/id" },
+        // "hvac_unit_type": {
+        //   "type": "string",
+        //   "enum": ["air_handling_unit", "heat_pump_outdoor", "heat_pump_indoor", "evaporator_coil", "condenser_coil", "chiller", "refrigeration_evaporator", "heat_recovery_exchanger", "fan_coil", "rooftop_unit", "other"]
+        // },
+        // "coil_id": { "$ref": "#/$defs/id" },
+        // "coil_section": { "type": "string", "maxLength": 32, "description": "e.g. inlet_row_1, outlet_row_4, circuit_A" },
+        // "zone": { "type": "string", "maxLength": 64 },
+        // "install_height_mm": { "type": "number" },
+        // "fin_pitch_mm": { "type": "number", "exclusiveMinimum": 0 },
+        // "fin_material": { "type": "string", "enum": ["aluminium", "copper", "coated_aluminium", "steel", "other"] },
+        // "refrigerant": { "type": "string", "maxLength": 16, "description": "e.g. R32, R410A, R290, glycol_30" },
+        // "description": { "type": "string", "maxLength": 256 },
+      }
+    },
+    "firmware": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "string", "maxLength": 32 },
+        // "build_id": { "type": "string", "maxLength": 64 },
+        // "git_hash": { "type": "string", "maxLength": 40 },
+        // "build_ts": { "$ref": "#/$defs/epoch_ms" },
+        "idf_version": { "type": "string", "maxLength": 32 },
+        // "hardware_revision": { "type": "string", "maxLength": 32 },
+        "chip": { "type": "string", "enum": ["ESP32", "ESP32-S2", "ESP32-S3", "ESP32-C3", "ESP32-C6", "other"] },
+        // "chip_revision": { "type": "string", "maxLength": 16 },
+        // "algorithm_version": { "type": "string", "maxLength": 32 },
+        // "partition": { "type": "string", "enum": ["ota_0", "ota_1", "factory"] },
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "string", "enum": ["good", "uncertain", "bad", "substituted", "stale", "calibrating", "disabled"] },
+        // "score": { "$ref": "#/$defs/unit_interval", "description": "Optional 0..1 data-quality score from the device." },
+        // "snr_db": { "type": "number" },
+        "flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["saturated", "adc_clipped", "open_circuit", "short_circuit", "out_of_range", "noisy", "drifting", "stuck_value", "emi_suspected", "mains_interference", "wet_electrode", "condensation_suspected", "temperature_out_of_range", "baseline_invalid", "baseline_stale", "timing_jitter", "sensor_disconnected", "low_supply", "reference_out_of_tolerance", "compensation_unavailable", "interpolated"]
+          }
+        },
+      }
+    },
+    "statistics": {
+      "type": "object",
+      "description": "Statistics over the sampling window for the primary value of the channel.",
+      "additionalProperties": false,
+      "properties": {
+        "n": { "type": "integer", "minimum": 0 },
+        "mean": { "type": "number" },
+        // "median": { "type": "number" },
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "std": { "type": "number", "minimum": 0 },
+        // "rms": { "type": "number", "minimum": 0 },
+        // "peak_to_peak": { "type": "number", "minimum": 0 },
+        // "p05": { "type": "number" },
+        // "p95": { "type": "number" },
+        // "slope_per_s": { "type": "number", "description": "Linear trend over the window, in value units per second." },
+        // "noise_floor": { "type": "number", "minimum": 0 },
+        // "outlier_count": { "type": "integer", "minimum": 0 },
+        // "first_value": { "type": "number" },
+        // "last_value": { "type": "number" },
+      }
+    },
+    "waveform": {
+      "type": "object",
+      "description": "Raw or decimated time-domain samples, for offline analysis. Large blocks may be split into chunks.",
+      "required": ["encoding", "sample_rate_hz", "sample_count", "data"],
+      "additionalProperties": false,
+      "properties": {
+        // "waveform_id": { "$ref": "#/$defs/id" },
+        // "start_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "encoding": {
+        //   "type": "string",
+        //   "enum": ["json_array", "base64_int16_le", "base64_uint16_le", "base64_int32_le", "base64_uint32_le", "base64_float32_le"]
+        // },
+        // "compression": { "type": "string", "enum": ["none", "deflate", "lz4"], "default": "none" },
+        // "sample_rate_hz": { "type": "number", "exclusiveMinimum": 0 },
+        // "sample_count": { "type": "integer", "minimum": 1 },
+        // "scale": { "type": "number", "default": 1, "description": "physical = raw * scale + offset" },
+        // "offset": { "type": "number", "default": 0 },
+        // "unit": { "type": "string", "maxLength": 16 },
+        // "quantity": {
+        //   "type": "string",
+        //   "enum": ["raw_counts", "capacitance_pf", "resistance_ohm", "voltage_v", "current_ua", "frequency_hz", "period_us", "temperature_c", "other"]
+        // },
+        // "chunk_index": { "type": "integer", "minimum": 0 },
+        // "chunk_count": { "type": "integer", "minimum": 1 },
+        // "crc32": { "type": "string", "pattern": "^[0-9a-fA-F]{8}$" },
+        // "data": { "oneOf": [{ "type": "array", "items": { "type": "number" } }, { "type": "string" }] },
+      }
+    },
+    "spectrum": {
+      "type": "object",
+      "description": "Frequency-domain representation (FFT of a raw channel, e.g. to detect mains pickup or fan vibration).",
+      "required": ["bin_hz", "magnitudes"],
+      "additionalProperties": false,
+      "properties": {
+        // "bin_hz": { "type": "number", "exclusiveMinimum": 0 },
+        // "start_hz": { "type": "number", "minimum": 0 },
+        // "fft_size": { "type": "integer", "minimum": 2 },
+        // "window": { "type": "string", "enum": ["rectangular", "hann", "hamming", "blackman", "flattop"] },
+        // "magnitudes": { "type": "array", "items": { "type": "number" } },
+        // "dominant_hz": { "type": "number", "minimum": 0 },
+        // "dominant_magnitude": { "type": "number" },
+        // "mains_peak_hz": { "type": "number" },
+        // "unit": { "type": "string", "maxLength": 16 },
+      }
+    },
+    "excitation": {
+      "type": "object",
+      "description": "Stimulus applied to the electrode / sensor.",
+      "additionalProperties": false,
+      "properties": {
+        // "waveform": { "type": "string", "enum": ["dc", "square", "sine", "triangle", "pulse", "charge_discharge", "none"] },
+        // "frequency_hz": { "type": "number", "minimum": 0 },
+        // "amplitude_v": { "type": "number", "minimum": 0 },
+        // "offset_v": { "type": "number" },
+        // "current_ua": { "type": "number", "minimum": 0 },
+        // "duty_pct": { "$ref": "#/$defs/pct" },
+        // "polarity_reversal": { "type": "boolean", "description": "Alternating polarity to avoid electrolysis/polarisation on resistive electrodes." },
+        // "polarity": { "type": "string", "enum": ["positive", "negative", "alternating"] },
+        // "burst_length_us": { "type": "number", "minimum": 0 },
+        // "settling_time_us": { "type": "number", "minimum": 0 },
+        // "duty_cycled": { "type": "boolean", "description": "Excitation only enabled during the measurement (saves power, reduces corrosion)." },
+      }
+    },
+    "front_end": {
+      "type": "object",
+      "description": "Measurement hardware and settings used for the channel.",
+      "additionalProperties": false,
+      "properties": {
+        // "type": {
+        //   "type": "string",
+        //   "enum": ["esp32_touch", "esp32_adc", "esp32_adc_calibrated", "external_adc", "cdc_fdc1004", "cdc_fdc2214", "cdc_ad7745", "cdc_pcap", "impedance_ad5933", "impedance_ad5940", "cap_touch_ic", "rc_oscillator", "charge_transfer", "resistive_divider", "wheatstone_bridge", "ac_bridge", "current_source", "other"]
+        // },
+        // "part_number": { "type": "string", "maxLength": 32 },
+        // "mode": {
+        //   "type": "string",
+        //   "enum": ["self_capacitance", "mutual_capacitance", "differential", "single_ended", "rc_oscillation", "charge_discharge", "sigma_delta", "lc_resonance", "four_wire", "two_wire", "bridge", "divider"]
+        // },
+        // "interface": { "type": "string", "enum": ["internal", "i2c", "spi", "gpio", "adc", "other"] },
+        // "adc_bits": { "type": "integer", "minimum": 1, "maximum": 32 },
+        // "adc_attenuation_db": { "type": "number" },
+        // "adc_reference_v": { "type": "number", "exclusiveMinimum": 0 },
+        // "adc_calibrated": { "type": "boolean" },
+        // "gain": { "type": "number", "exclusiveMinimum": 0 },
+        // "range_index": { "type": "integer", "minimum": 0 },
+        // "range_min": { "type": "number" },
+        // "range_max": { "type": "number" },
+        // "auto_ranging": { "type": "boolean" },
+        // "oversampling": { "type": "integer", "minimum": 1 },
+        // "conversion_time_us": { "type": "number", "minimum": 0 },
+        // "reference_resistor_ohm": { "type": "number", "exclusiveMinimum": 0 },
+        // "reference_capacitor_pf": { "type": "number", "exclusiveMinimum": 0 },
+        // "shield_driven": { "type": "boolean", "description": "Active shield/guard driven to remove stray capacitance." },
+        // "offset_capacitance_pf": { "type": "number", "description": "Programmed offset (e.g. FDC1004 CAPDAC)." },
+        // "touch_pad": {
+        //   "type": "object",
+        //   "description": "ESP32 touch-sensor peripheral settings.",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "pad": { "type": "integer", "minimum": 0 },
+        //     "charge_voltage_high": { "type": "string" },
+        //     "charge_voltage_low": { "type": "string" },
+        //     "slope": { "type": "integer" },
+        //     "measurement_cycles": { "type": "integer", "minimum": 1 },
+        //     "sleep_cycles": { "type": "integer", "minimum": 0 },
+        //     "denoise_enabled": { "type": "boolean" },
+        //     "filter_mode": { "type": "string" },
+        //   }
+        // },
+        // "excitation": { "$ref": "#/$defs/excitation" },
+      }
+    },
+    "electrode": {
+      "type": "object",
+      "description": "Physical sensing element.",
+      "additionalProperties": false,
+      "properties": {
+        // "electrode_id": { "$ref": "#/$defs/id" },
+        // "role": { "type": "string", "enum": ["sense", "drive", "reference", "guard", "shield", "compensation", "ground"] },
+        // "geometry": {
+        //   "type": "string",
+        //   "enum": ["interdigitated", "parallel_plate", "coplanar", "ring", "wire_grid", "pad", "pcb_trace", "fin_clamp", "probe", "other"]
+        // },
+        // "mounting": {
+        //   "type": "string",
+        //   "enum": ["fin_surface", "between_fins", "tube_surface", "drain_pan", "air_stream", "duct_wall", "other"]
+        // },
+        // "area_mm2": { "type": "number", "exclusiveMinimum": 0 },
+        // "gap_mm": { "type": "number", "exclusiveMinimum": 0 },
+        // "finger_count": { "type": "integer", "minimum": 1 },
+        // "cable_length_m": { "type": "number", "minimum": 0 },
+        // "coating": { "type": "string", "enum": ["none", "conformal", "parylene", "soldermask", "hydrophobic", "other"] },
+        // "position": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "x_mm": { "type": "number" },
+        //     "y_mm": { "type": "number" },
+        //     "z_mm": { "type": "number" },
+        //     "row": { "type": "integer", "minimum": 0 },
+        //     "fin_index": { "type": "integer", "minimum": 0 },
+        //     "tube_index": { "type": "integer", "minimum": 0 },
+        //     "description": { "type": "string", "maxLength": 128 },
+        //   }
+        // },
+      }
+    },
+    "capacitive": {
+      "type": "object",
+      "description": "Capacitive sensing result. Ice (eps_r ~3.2) vs water (eps_r ~80) vs air (~1) changes the measured capacitance in distinguishable ways.",
+      "additionalProperties": false,
+      "properties": {
+        "raw_counts": { "type": "number", "description": "Raw value of the sensing peripheral (touch counts, CDC code, ADC code)." },
+        // "raw_frequency_hz": { "type": "number", "minimum": 0, "description": "Oscillator frequency for RC/LC oscillator based sensing." },
+        // "raw_period_us": { "type": "number", "minimum": 0 },
+        // "charge_time_us": { "type": "number", "minimum": 0 },
+        // "discharge_time_us": { "type": "number", "minimum": 0 },
+        // "capacitance_pf": { "type": "number", "minimum": 0 },
+        // "capacitance_filtered_pf": { "type": "number", "minimum": 0 },
+        // "capacitance_compensated_pf": { "type": "number", "description": "After temperature / parasitic / drift compensation." },
+        // "delta_pf": { "type": "number", "description": "Compensated capacitance minus baseline." },
+        "delta_pct": { "type": "number", "description": "Relative change vs baseline." },
+        // "baseline_pf": { "type": "number", "minimum": 0 },
+        // "baseline_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "baseline_age_s": { "type": "integer", "minimum": 0 },
+        // "parasitic_pf": { "type": "number" },
+        // "shield_pf": { "type": "number" },
+        // "reference_pf": { "type": "number", "description": "Reading of a reference/compensation electrode in the same environment." },
+        // "differential_pf": { "type": "number", "description": "Sense minus reference." },
+        // "mutual": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "tx_electrode_id": { "$ref": "#/$defs/id" },
+        //     "rx_electrode_id": { "$ref": "#/$defs/id" },
+        //     "coupling_pf": { "type": "number" },
+        //   }
+        // },
+        // "relative_permittivity_est": { "type": "number", "minimum": 1, "description": "Effective permittivity estimated from the geometry model." },
+        // "normalized": { "type": "number", "description": "0 = clear baseline, 1 = full-scale ice reference." },
+        // "temperature_compensation": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "applied": { "type": "boolean" },
+        //     "reference_temperature_c": { "type": "number" },
+        //     "coefficient_ppm_per_k": { "type": "number" },
+        //     "temperature_used_c": { "type": "number" },
+        //   }
+        // },
+      }
+    },
+    "resistive": {
+      "type": "object",
+      "description": "Resistive / conductive sensing result (liquid water film vs ice vs dry surface).",
+      "additionalProperties": false,
+      "properties": {
+        // "raw_adc": { "type": "number" },
+        "voltage_v": { "type": "number" },
+        // "current_ua": { "type": "number" },
+        "resistance_ohm": { "type": "number", "minimum": 0 },
+        // "resistance_filtered_ohm": { "type": "number", "minimum": 0 },
+        // "conductance_us": { "type": "number", "minimum": 0 },
+        // "delta_ohm": { "type": "number" },
+        "delta_pct": { "type": "number" },
+        "baseline_ohm": { "type": "number", "minimum": 0 },
+        // "baseline_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "baseline_age_s": { "type": "integer", "minimum": 0 },
+        "log10_resistance": { "type": "number", "description": "Handy when resistance spans many decades (dry vs wet vs frozen)." },
+        // "surface_resistance_ohm_sq": { "type": "number", "minimum": 0 },
+        // "resistivity_ohm_m": { "type": "number", "minimum": 0 },
+        // "polarity": { "type": "string", "enum": ["positive", "negative", "alternating"] },
+        // "forward_resistance_ohm": { "type": "number", "minimum": 0 },
+        // "reverse_resistance_ohm": { "type": "number", "minimum": 0 },
+        "open_circuit": { "type": "boolean" },
+        "short_circuit": { "type": "boolean" },
+        // "saturated": { "type": "boolean" },
+        // "leakage_current_na": { "type": "number" },
+      }
+    },
+    "impedance": {
+      "type": "object",
+      "description": "Complex impedance at one frequency, or a sweep. Frequency dependence separates liquid water, ice and frost.",
+      "additionalProperties": false,
+      "properties": {
+        // "frequency_hz": { "type": "number", "exclusiveMinimum": 0 },
+        // "magnitude_ohm": { "type": "number", "minimum": 0 },
+        // "phase_deg": { "type": "number", "minimum": -180, "maximum": 180 },
+        // "real_ohm": { "type": "number" },
+        // "imag_ohm": { "type": "number" },
+        // "dissipation_factor": { "type": "number", "minimum": 0 },
+        // "loss_tangent": { "type": "number", "minimum": 0 },
+        // "equivalent_model": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "topology": { "type": "string", "enum": ["parallel_rc", "series_rc", "randles", "cole_cole", "custom"] },
+        //     "r_ohm": { "type": "number", "minimum": 0 },
+        //     "c_pf": { "type": "number", "minimum": 0 },
+        //     "r2_ohm": { "type": "number", "minimum": 0 },
+        //     "fit_error": { "type": "number", "minimum": 0 },
+        //   }
+        // },
+        // "sweep": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "start_hz": { "type": "number", "exclusiveMinimum": 0 },
+        //     "stop_hz": { "type": "number", "exclusiveMinimum": 0 },
+        //     "points": { "type": "integer", "minimum": 2 },
+        //     "scale": { "type": "string", "enum": ["linear", "log"] },
+        //     "duration_ms": { "type": "number", "minimum": 0 },
+        //     "points_data": {
+        //       "type": "array",
+        //       "items": {
+        //         "type": "object",
+        //         "required": ["frequency_hz"],
+        //         "additionalProperties": false,
+        //         "properties": {
+        //           "frequency_hz": { "type": "number", "exclusiveMinimum": 0 },
+        //           "magnitude_ohm": { "type": "number", "minimum": 0 },
+        //           "phase_deg": { "type": "number" },
+        //           "real_ohm": { "type": "number" },
+        //           "imag_ohm": { "type": "number" },
+        //           "capacitance_pf": { "type": "number" },
+        //         }
+        //       }
+        //     },
+        //   }
+        // },
+      }
+    },
+    "thermal": {
+      "type": "object",
+      "description": "Temperature reading. Surface/coil temperature is the key context for interpreting ice sensing.",
+      "additionalProperties": false,
+      "properties": {
+        "temperature_c": { "type": "number", "minimum": -273.15 },
+        // "temperature_filtered_c": { "type": "number", "minimum": -273.15 },
+        "sensor_type": {
+          "type": "string",
+          "enum": ["ntc", "ptc", "rtd_pt100", "rtd_pt1000", "thermocouple_k", "thermocouple_t", "ds18b20", "sht_digital", "tmp117", "esp32_internal", "other"]
+        },
+        "location": {
+          "type": "string",
+          "enum": ["air_inlet", "air_outlet", "coil_surface", "fin", "refrigerant_suction", "refrigerant_liquid", "refrigerant_discharge", "drain_pan", "ambient", "enclosure", "pcb", "electrode", "other"]
+        },
+        "resistance_ohm": { "type": "number", "minimum": 0 },
+        "ntc_beta": { "type": "number" },
+        // "accuracy_c": { "type": "number", "minimum": 0 },
+        // "rate_c_per_min": { "type": "number" },
+        "below_freezing": { "type": "boolean" },
+      }
+    },
+    "channel": {
+      "type": "object",
+      "description": "One measurement channel (an electrode + front-end + conversion) in the reporting window.",
+      "required": ["channel_id", "kind"],
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": { "$ref": "#/$defs/id" },
+        // "sensor_id": { "$ref": "#/$defs/id" },
+        // "name": { "type": "string", "maxLength": 64 },
+        "kind": {
+          "type": "string",
+          "enum": ["capacitive", "resistive", "impedance", "temperature", "humidity", "pressure", "differential_pressure", "airflow", "current", "voltage", "vibration", "optical", "acoustic", "digital_input", "composite", "other"]
+        },
+        // "enabled": { "type": "boolean" },
+        // "electrode": { "$ref": "#/$defs/electrode" },
+        // "front_end": { "$ref": "#/$defs/front_end" },
+        "capacitive": { "$ref": "#/$defs/capacitive" },
+        "resistive": { "$ref": "#/$defs/resistive" },
+        // "impedance": { "$ref": "#/$defs/impedance" },
+        "thermal": { "$ref": "#/$defs/thermal" },
+        // "generic": {
+        //   "type": "object",
+        //   "description": "Value of any other sensor kind (humidity, pressure, airflow, digital input, ...).",
+        //   "required": ["value", "unit"],
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "value": { "type": "number" },
+        //     "unit": { "type": "string", "maxLength": 16 },
+        //     "raw": { "type": "number" },
+        //     "state": { "type": "boolean" },
+        //   }
+        // },
+        "statistics": { "$ref": "#/$defs/statistics" },
+        "quality": { "$ref": "#/$defs/quality" },
+        // "samples_compact": {
+        //   "type": "object",
+        //   "description": "Several samples in one message in columnar form to save bandwidth. 'values' unit follows the primary quantity named in 'quantity'.",
+        //   "required": ["quantity", "dt_ms", "values"],
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "quantity": {
+        //       "type": "string",
+        //       "enum": ["raw_counts", "capacitance_pf", "resistance_ohm", "impedance_magnitude_ohm", "phase_deg", "temperature_c", "voltage_v", "other"]
+        //     },
+        //     "t0_offset_ms": { "type": "integer", "minimum": 0, "description": "Offset of first sample from window.start_ts." },
+        //     "dt_ms": { "type": "number", "exclusiveMinimum": 0 },
+        //     "values": { "type": "array", "items": { "type": "number" }, "maxItems": 1024 },
+        //   }
+        // },
+        // "waveform": { "$ref": "#/$defs/waveform" },
+        // "spectrum": { "$ref": "#/$defs/spectrum" },
+        // "faults": { "type": "array", "items": { "$ref": "#/$defs/fault" } },
+      }
+    },
+    "fault": {
+      "type": "object",
+      "required": ["code"],
+      "additionalProperties": false,
+      "properties": {
+        // "code": {
+        //   "type": "string",
+        //   "maxLength": 32,
+        //   "description": "Stable machine-readable code, e.g. E_OPEN_CIRCUIT, E_ADC_TIMEOUT, E_I2C_NACK."
+        // },
+        // "severity": { "type": "string", "enum": ["info", "warning", "error", "critical"] },
+        // "first_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "last_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "count": { "type": "integer", "minimum": 1 },
+        // "active": { "type": "boolean" },
+        // "message": { "type": "string", "maxLength": 256 },
+      }
+    },
+    "window": {
+      "type": "object",
+      "description": "Time window the telemetry values refer to.",
+      "required": ["start_ts", "end_ts"],
+      "additionalProperties": false,
+      "properties": {
+        "start_ts": { "$ref": "#/$defs/epoch_ms" },
+        "end_ts": { "$ref": "#/$defs/epoch_ms" },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "sample_rate_hz": { "type": "number", "exclusiveMinimum": 0 },
+        "sample_count": { "type": "integer", "minimum": 0 },
+        "aggregation": { "type": "string", "enum": ["instant", "mean", "median", "min", "max", "rms", "decimated", "raw_block", "mixed"] },
+        "trigger": {
+          "type": "string",
+          "enum": ["periodic", "on_change", "on_threshold", "on_command", "on_hvac_event", "on_boot", "adaptive_fast"]
+        },
+      }
+    },
+    "environment": {
+      "type": "object",
+      "description": "Environmental context relevant to ice formation (also available as separate channels; use whichever is cheaper).",
+      "additionalProperties": false,
+      "properties": {
+        // "air_temperature_c": { "type": "number" },
+        // "air_inlet_temperature_c": { "type": "number" },
+        // "air_outlet_temperature_c": { "type": "number" },
+        // "coil_surface_temperature_c": { "type": "number" },
+        // "refrigerant_temperature_c": { "type": "number" },
+        // "air_humidity_rh": { "$ref": "#/$defs/pct" },
+        // "dew_point_c": { "type": "number" },
+        // "frost_point_c": { "type": "number" },
+        // "absolute_humidity_g_m3": { "type": "number", "minimum": 0 },
+        // "pressure_hpa": { "type": "number", "minimum": 0 },
+        // "differential_pressure_pa": { "type": "number", "description": "Pressure drop across the coil. Rises as ice blocks airflow." },
+        // "airflow_m_s": { "type": "number", "minimum": 0 },
+        // "airflow_m3_h": { "type": "number", "minimum": 0 },
+        // "fan_rpm": { "type": "number", "minimum": 0 },
+        // "water_present": { "type": "boolean", "description": "Drain pan / leak sensor." },
+      }
+    },
+    "hvac_context": {
+      "type": "object",
+      "description": "State of the HVAC system when the data was taken, if known to the device (digital inputs, Modbus, BACnet, MQTT from the controller).",
+      "additionalProperties": false,
+      "properties": {
+        // "source": {
+        //   "type": "string",
+        //   "enum": ["digital_input", "modbus", "bacnet", "mqtt", "can", "analog_input", "inferred", "manual", "unknown"]
+        // },
+        // "operating_mode": {
+        //   "type": "string",
+        //   "enum": ["off", "standby", "cooling", "heating", "fan_only", "dehumidify", "defrost", "auto", "unknown"]
+        // },
+        // "defrost_state": { "type": "string", "enum": ["none", "pre_defrost", "active", "drip", "post_defrost", "fault"] },
+        // "defrost_method": { "type": "string", "enum": ["hot_gas", "reverse_cycle", "electric", "off_cycle", "water", "other"] },
+        // "compressor_on": { "type": "boolean" },
+        // "compressor_speed_pct": { "$ref": "#/$defs/pct" },
+        // "fan_on": { "type": "boolean" },
+        // "fan_speed_pct": { "$ref": "#/$defs/pct" },
+        // "reversing_valve_heating": { "type": "boolean" },
+        // "expansion_valve_pct": { "$ref": "#/$defs/pct" },
+        // "heater_on": { "type": "boolean" },
+        // "setpoint_c": { "type": "number" },
+        // "suction_pressure_kpa": { "type": "number" },
+        // "discharge_pressure_kpa": { "type": "number" },
+        // "superheat_k": { "type": "number" },
+        // "subcooling_k": { "type": "number" },
+        // "power_w": { "type": "number", "minimum": 0 },
+        // "time_since_last_defrost_s": { "type": "integer", "minimum": 0 },
+        // "runtime_since_defrost_s": { "type": "integer", "minimum": 0 },
+        // "defrost_count_24h": { "type": "integer", "minimum": 0 },
+        // "alarm_active": { "type": "boolean" },
+      }
+    },
+    "ice_assessment": {
+      "type": "object",
+      "description": "On-device interpretation of the sensor data. May be absent if all evaluation is done in the backend.",
+      "required": ["state"],
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": ["clear", "dry", "wet", "condensation", "frost_onset", "frost", "ice", "heavy_ice", "blocked", "melting", "unknown"]
+        },
+        // "confidence": { "$ref": "#/$defs/unit_interval" },
+        // "probabilities": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "clear": { "$ref": "#/$defs/unit_interval" },
+        //     "condensation": { "$ref": "#/$defs/unit_interval" },
+        //     "frost": { "$ref": "#/$defs/unit_interval" },
+        //     "ice": { "$ref": "#/$defs/unit_interval" },
+        //   }
+        // },
+        "thickness_mm_est": { "type": "number", "minimum": 0 },
+        // "thickness_mm_min": { "type": "number", "minimum": 0 },
+        // "thickness_mm_max": { "type": "number", "minimum": 0 },
+        // "coverage_pct": { "$ref": "#/$defs/pct" },
+        // "coil_blockage_pct": { "$ref": "#/$defs/pct" },
+        // "ice_water_ratio_est": {
+        //   "$ref": "#/$defs/unit_interval",
+        //   "description": "Estimated solid fraction of the deposit (1 = pure ice, 0 = liquid water)."
+        // },
+        // "growth_rate_mm_per_h": { "type": "number" },
+        // "time_to_blockage_s_est": { "type": "integer", "minimum": 0 },
+        "defrost_recommended": { "type": "boolean" },
+        // "defrost_urgency": { "type": "string", "enum": ["none", "low", "medium", "high", "immediate"] },
+        // "state_since_ts": { "$ref": "#/$defs/epoch_ms" },
+        "state_duration_s": { "type": "integer", "minimum": 0 },
+        "previous_state": {
+          "type": "string",
+          "enum": ["clear", "dry", "wet", "condensation", "frost_onset", "frost", "ice", "heavy_ice", "blocked", "melting", "unknown"]
+        },
+        "algorithm": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string", "maxLength": 64 },
+            "version": { "type": "string", "maxLength": 32 },
+            "model_id": { "type": "string", "maxLength": 64 },
+            "type": { "type": "string", "enum": ["threshold", "rule_based", "decision_tree", "ml_model", "fusion", "other"] },
+          }
+        },
+        // "input_channels": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true },
+        "features": {
+          "type": "object",
+          "description": "Named numeric features the decision was based on (e.g. delta_c_pf, delta_r_log10, phase_at_1khz_deg, c_ratio_hi_lo, dT_dt).",
+          "additionalProperties": { "type": "number" }
+        },
+        // "thresholds_applied": { "type": "array", "items": { "$ref": "#/$defs/threshold" } },
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "required": ["window", "channels"],
+      "additionalProperties": false,
+      "properties": {
+        "window": { "$ref": "#/$defs/window" },
+        "channels": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/channel" } },
+        // "environment": { "$ref": "#/$defs/environment" },
+        // "hvac_context": { "$ref": "#/$defs/hvac_context" },
+        "ice_assessment": { "$ref": "#/$defs/ice_assessment" },
+        // "zones": {
+        //   "type": "array",
+        //   "description": "Per-zone ice assessment when one device monitors several coil sections.",
+        //   "items": {
+        //     "type": "object",
+        //     "required": ["zone_id", "ice_assessment"],
+        //     "additionalProperties": false,
+        //     "properties": {
+        //       "zone_id": { "$ref": "#/$defs/id" },
+        //       "channel_ids": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+        //       "ice_assessment": { "$ref": "#/$defs/ice_assessment" },
+        //     }
+        //   }
+        // },
+        "status_summary": {
+          "type": "object",
+          "description": "Minimal health data piggybacked on telemetry so that a separate status message is not needed every window.",
+          "additionalProperties": false,
+          "properties": {
+            "rssi_dbm": { "type": "integer", "maximum": 0 },
+            // "supply_v": { "type": "number", "minimum": 0 },
+            "free_heap_bytes": { "type": "integer", "minimum": 0 },
+            "queue_depth": { "type": "integer", "minimum": 0 },
+            // "internal_temp_c": { "type": "number" },
+          }
+        },
+      }
+    },
+    "threshold": {
+      "type": "object",
+      "required": ["name", "value"],
+      "additionalProperties": false,
+      "properties": {
+        // "name": { "type": "string", "maxLength": 64 },
+        // "channel_id": { "$ref": "#/$defs/id" },
+        // "quantity": { "type": "string", "maxLength": 32, "description": "e.g. delta_pf, delta_pct, resistance_ohm, temperature_c" },
+        // "value": { "type": "number" },
+        // "unit": { "type": "string", "maxLength": 16 },
+        // "direction": { "type": "string", "enum": ["above", "below", "rising", "falling", "outside_band", "inside_band"] },
+        // "upper_value": { "type": "number", "description": "Second bound for band thresholds." },
+        // "hysteresis": { "type": "number", "minimum": 0 },
+        // "min_duration_ms": { "type": "integer", "minimum": 0, "description": "Condition must hold this long before it triggers." },
+        // "severity": { "type": "string", "enum": ["info", "notice", "warning", "alarm", "critical"] },
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": ["event_type", "severity"],
+      "additionalProperties": false,
+      "properties": {
+        // "event_id": { "$ref": "#/$defs/id" },
+        "event_type": {
+          "type": "string",
+          "enum": ["ice_detected", "ice_cleared", "frost_detected", "frost_cleared", "ice_state_changed", "defrost_recommended", "defrost_started", "defrost_ended", "hvac_mode_changed", "coil_blocked", "threshold_crossed", "rapid_change", "baseline_updated", "baseline_drift_warning", "sensor_fault", "sensor_recovered", "electrode_damage_suspected", "calibration_required", "calibration_started", "calibration_completed", "connectivity_lost", "connectivity_restored", "time_sync_lost", "time_synced", "buffer_overflow", "brownout", "low_supply", "watchdog_reset", "reset", "boot", "config_changed", "ota_started", "ota_completed", "ota_failed", "ota_rolled_back", "self_test_failed", "tamper", "other"]
+        },
+        "severity": { "type": "string", "enum": ["debug", "info", "notice", "warning", "alarm", "critical"] },
+        "state": {
+          "type": "string",
+          "enum": ["instant", "raised", "ongoing", "cleared"],
+          "description": "Alarm lifecycle: 'raised' when condition starts, 'cleared' when it ends."
+        },
+        // "channel_id": { "$ref": "#/$defs/id" },
+        // "zone_id": { "$ref": "#/$defs/id" },
+        // "started_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "ended_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "code": { "type": "integer" },
+        "message": { "type": "string", "maxLength": 256 },
+        // "observed_value": { "type": "number" },
+        // "observed_unit": { "type": "string", "maxLength": 16 },
+        // "threshold": { "$ref": "#/$defs/threshold" },
+        "ice_assessment": { "$ref": "#/$defs/ice_assessment" },
+        // "hvac_context": { "$ref": "#/$defs/hvac_context" },
+        // "snapshot_window": { "$ref": "#/$defs/window", "description": "Window of a related telemetry message / waveform for context." },
+        // "waveform": { "$ref": "#/$defs/waveform" },
+        // "acknowledged": { "type": "boolean" },
+        "details": { "type": "object", "description": "Free-form extra data for the event.", "additionalProperties": true },
+      }
+    },
+    "power": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        // "source": { "type": "string", "enum": ["mains_dc", "battery", "poe", "usb", "solar", "24vac_rectified", "other"] },
+        // "supply_v": { "type": "number", "minimum": 0 },
+        // "supply_3v3_v": { "type": "number", "minimum": 0 },
+        // "battery_v": { "type": "number", "minimum": 0 },
+        // "battery_pct": { "$ref": "#/$defs/pct" },
+        // "charging": { "type": "boolean" },
+        // "current_ma": { "type": "number", "minimum": 0 },
+        // "avg_power_mw": { "type": "number", "minimum": 0 },
+        // "brownout_count": { "type": "integer", "minimum": 0 },
+        // "sleep_mode": { "type": "string", "enum": ["active", "modem_sleep", "light_sleep", "deep_sleep"] },
+        // "duty_cycle_pct": { "$ref": "#/$defs/pct" },
+      }
+    },
+    "connectivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "link": { "type": "string", "enum": ["wifi", "ethernet", "cellular", "lora", "ble", "thread", "none"] },
+        "connected": { "type": "boolean" },
+        "rssi_dbm": { "type": "integer", "maximum": 0 },
+        // "wifi_channel": { "type": "integer", "minimum": 1, "maximum": 196 },
+        // "ip_address": { "type": "string", "maxLength": 45 },
+        // "mac_address": { "type": "string", "pattern": "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$" },
+        "reconnect_count": { "type": "integer", "minimum": 0 },
+        // "last_disconnect_reason": { "type": "string", "maxLength": 64 },
+        // "last_disconnect_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "connected_since_ts": { "$ref": "#/$defs/epoch_ms" },
+        "transport": { "type": "string", "enum": ["mqtt", "https", "websocket", "coap", "tcp", "other"] },
+        "broker_connected": { "type": "boolean" },
+        "tx_messages": { "type": "integer", "minimum": 0 },
+        "tx_failures": { "type": "integer", "minimum": 0 },
+        // "rx_messages": { "type": "integer", "minimum": 0 },
+        // "tx_bytes": { "type": "integer", "minimum": 0 },
+        // "rx_bytes": { "type": "integer", "minimum": 0 },
+        // "round_trip_ms": { "type": "number", "minimum": 0 },
+        "tls": { "type": "boolean" },
+        // "cert_expiry_ts": { "$ref": "#/$defs/epoch_ms" },
+      }
+    },
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "free_heap_bytes": { "type": "integer", "minimum": 0 },
+        "min_free_heap_bytes": { "type": "integer", "minimum": 0 },
+        // "largest_free_block_bytes": { "type": "integer", "minimum": 0 },
+        // "cpu_load_pct": { "$ref": "#/$defs/pct" },
+        "cpu_freq_mhz": { "type": "integer", "minimum": 0 },
+        // "internal_temp_c": { "type": "number" },
+        "reset_reason": {
+          "type": "string",
+          "enum": ["power_on", "software", "panic", "int_watchdog", "task_watchdog", "other_watchdog", "deep_sleep_wake", "brownout", "external_pin", "sdio", "unknown"]
+        },
+        // "task_watchdog_count": { "type": "integer", "minimum": 0 },
+        // "panic_count": { "type": "integer", "minimum": 0 },
+        // "flash_free_bytes": { "type": "integer", "minimum": 0 },
+        // "nvs_used_pct": { "$ref": "#/$defs/pct" },
+        // "stack_high_water_marks": {
+        //   "type": "object",
+        //   "description": "Task name -> minimum free stack bytes.",
+        //   "additionalProperties": { "type": "integer", "minimum": 0 }
+        // },
+        // "loop_jitter_us_max": { "type": "number", "minimum": 0, "description": "Worst-case sampling-timer jitter, relevant to measurement quality." },
+      }
+    },
+    "buffering": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "storage": { "type": "string", "enum": ["ram", "flash", "sd_card", "none"] },
+        "queued_messages": { "type": "integer", "minimum": 0 },
+        "capacity_messages": { "type": "integer", "minimum": 0 },
+        // "fill_pct": { "$ref": "#/$defs/pct" },
+        "dropped_messages": { "type": "integer", "minimum": 0 },
+        // "oldest_queued_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "last_acked_seq": { "type": "integer", "minimum": 0 },
+        "overflow_policy": { "type": "string", "enum": ["drop_oldest", "drop_newest", "downsample", "stop"] },
+      }
+    },
+    "sensor_status": {
+      "type": "object",
+      "required": ["channel_id", "state"],
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": { "$ref": "#/$defs/id" },
+        "state": { "type": "string", "enum": ["ok", "degraded", "fault", "disabled", "calibrating", "not_present"] },
+        // "last_ok_ts": { "$ref": "#/$defs/epoch_ms" },
+        "error_count": { "type": "integer", "minimum": 0 },
+        // "last_error_code": { "type": "string", "maxLength": 32 },
+        // "self_test_passed": { "type": "boolean" },
+        // "last_calibration_ts": { "$ref": "#/$defs/epoch_ms" },
+        "baseline_valid": { "type": "boolean" },
+        // "baseline_age_s": { "type": "integer", "minimum": 0 },
+        // "noise_floor": { "type": "number", "minimum": 0 },
+        // "operating_hours": { "type": "number", "minimum": 0 },
+        // "faults": { "type": "array", "items": { "$ref": "#/$defs/fault" } },
+      }
+    },
+    "ota": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        // "state": {
+        //   "type": "string",
+        //   "enum": ["idle", "available", "downloading", "verifying", "pending_reboot", "validating", "rolled_back", "failed"]
+        // },
+        // "target_version": { "type": "string", "maxLength": 32 },
+        // "progress_pct": { "$ref": "#/$defs/pct" },
+        // "last_result": { "type": "string", "maxLength": 64 },
+        // "last_update_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "secure_boot": { "type": "boolean" },
+        // "flash_encryption": { "type": "boolean" },
+      }
+    },
+    "status": {
+      "type": "object",
+      "description": "Periodic device health report (also used as heartbeat with only 'health' set).",
+      "required": ["health"],
+      "additionalProperties": false,
+      "properties": {
+        "health": { "type": "string", "enum": ["ok", "degraded", "fault", "starting", "shutting_down"] },
+        // "health_reason": { "type": "string", "maxLength": 128 },
+        // "power": { "$ref": "#/$defs/power" },
+        "connectivity": { "$ref": "#/$defs/connectivity" },
+        "system": { "$ref": "#/$defs/system" },
+        "buffering": { "$ref": "#/$defs/buffering" },
+        "sensors": { "type": "array", "items": { "$ref": "#/$defs/sensor_status" } },
+        // "ota": { "$ref": "#/$defs/ota" },
+        // "config_hash": { "type": "string", "pattern": "^[0-9a-fA-F]{8,64}$" },
+        // "active_faults": { "type": "array", "items": { "$ref": "#/$defs/fault" } },
+        // "counters": {
+        //   "type": "object",
+        //   "description": "Monotonic lifetime counters.",
+        //   "additionalProperties": { "type": "integer", "minimum": 0 }
+        // },
+      }
+    },
+    "channel_config": {
+      "type": "object",
+      "required": ["channel_id"],
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": { "$ref": "#/$defs/id" },
+        // "enabled": { "type": "boolean" },
+        "sample_rate_hz": { "type": "number", "exclusiveMinimum": 0 },
+        // "oversampling": { "type": "integer", "minimum": 1 },
+        // "front_end": { "$ref": "#/$defs/front_end" },
+        // "filter": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "type": {
+        //       "type": "string",
+        //       "enum": ["none", "moving_average", "median", "iir_lowpass", "kalman", "notch_50hz", "notch_60hz", "outlier_reject"]
+        //     },
+        //     "window_samples": { "type": "integer", "minimum": 1 },
+        //     "cutoff_hz": { "type": "number", "exclusiveMinimum": 0 },
+        //     "order": { "type": "integer", "minimum": 1 },
+        //     "alpha": { "$ref": "#/$defs/unit_interval" },
+        //   }
+        // },
+        // "baseline": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "auto_update": { "type": "boolean" },
+        //     "update_only_when": { "type": "string", "enum": ["always", "hvac_off", "after_defrost", "no_ice_state", "manual"] },
+        //     "time_constant_s": { "type": "number", "exclusiveMinimum": 0 },
+        //     "max_drift_pct": { "type": "number", "minimum": 0 },
+        //     "max_age_s": { "type": "integer", "minimum": 0 },
+        //   }
+        // },
+        // "temperature_compensation": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "enabled": { "type": "boolean" },
+        //     "reference_channel_id": { "$ref": "#/$defs/id" },
+        //     "reference_temperature_c": { "type": "number" },
+        //     "coefficient_ppm_per_k": { "type": "number" },
+        //   }
+        // },
+        // "thresholds": { "type": "array", "items": { "$ref": "#/$defs/threshold" } },
+        // "report_mode": { "type": "string", "enum": ["every_window", "on_change", "on_threshold", "disabled"] },
+        // "deadband": { "type": "number", "minimum": 0, "description": "Minimum change in the primary value before an on_change report." },
+        // "include_statistics": { "type": "boolean" },
+        // "include_waveform": { "type": "boolean" },
+        // "include_spectrum": { "type": "boolean" },
+      }
+    },
+    "config": {
+      "type": "object",
+      "description": "Effective device configuration (reported by the device, or sent inside a set_config command).",
+      "additionalProperties": false,
+      "properties": {
+        // "config_id": { "$ref": "#/$defs/id" },
+        "config_version": { "type": "integer", "minimum": 0 },
+        // "applied_ts": { "$ref": "#/$defs/epoch_ms" },
+        "reporting": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "telemetry_interval_s": { "type": "number", "exclusiveMinimum": 0 },
+            // "status_interval_s": { "type": "number", "exclusiveMinimum": 0 },
+            // "heartbeat_interval_s": { "type": "number", "exclusiveMinimum": 0 },
+            // "window_duration_ms": { "type": "integer", "minimum": 1 },
+            // "batch_size": { "type": "integer", "minimum": 1 },
+            // "default_aggregation": { "type": "string", "enum": ["instant", "mean", "median", "min", "max", "rms", "decimated", "raw_block"] },
+            // "payload_encoding": { "type": "string", "enum": ["json", "cbor", "protobuf"] },
+            // "adaptive": {
+            //   "type": "object",
+            //   "description": "Report faster while ice is developing.",
+            //   "additionalProperties": false,
+            //   "properties": {
+            //     "enabled": { "type": "boolean" },
+            //     "fast_interval_s": { "type": "number", "exclusiveMinimum": 0 },
+            //     "trigger_states": { "type": "array", "items": { "type": "string" } },
+            //     "hold_time_s": { "type": "integer", "minimum": 0 },
+            //   }
+            // },
+          }
+        },
+        "channels": { "type": "array", "items": { "$ref": "#/$defs/channel_config" } },
+        "algorithm": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "on_device_assessment": { "type": "boolean" },
+            "name": { "type": "string", "maxLength": 64 },
+            "version": { "type": "string", "maxLength": 32 },
+            "parameters": { "type": "object", "additionalProperties": { "type": "number" } },
+            // "state_thresholds": { "type": "array", "items": { "$ref": "#/$defs/threshold" } },
+            // "min_state_duration_s": { "type": "integer", "minimum": 0 },
+            // "defrost_inhibit_s": { "type": "integer", "minimum": 0 },
+          }
+        },
+        // "hvac_inputs": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "source": { "type": "string", "enum": ["digital_input", "modbus", "bacnet", "mqtt", "can", "analog_input", "none"] },
+        //     "poll_interval_s": { "type": "number", "exclusiveMinimum": 0 },
+        //     "mapping": { "type": "object", "additionalProperties": { "type": "string" } },
+        //   }
+        // },
+        // "time": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "ntp_servers": { "type": "array", "items": { "type": "string", "maxLength": 128 }, "maxItems": 4 },
+        //     "resync_interval_s": { "type": "integer", "minimum": 60 },
+        //   }
+        // },
+        // "buffering": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "storage": { "type": "string", "enum": ["ram", "flash", "sd_card"] },
+        //     "max_messages": { "type": "integer", "minimum": 0 },
+        //     "overflow_policy": { "type": "string", "enum": ["drop_oldest", "drop_newest", "downsample", "stop"] },
+        //   }
+        // },
+        // "logging": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "level": { "type": "string", "enum": ["error", "warn", "info", "debug", "verbose"] },
+        //     "remote": { "type": "boolean" },
+        //   }
+        // },
+      }
+    },
+    "command": {
+      "type": "object",
+      "description": "Backend -> device. Device must answer with command_ack carrying the same command_id.",
+      "required": ["command_id", "command_type"],
+      "additionalProperties": false,
+      "properties": {
+        "command_id": { "$ref": "#/$defs/id" },
+        "command_type": {
+          "type": "string",
+          "enum": ["set_config", "get_config", "get_status", "trigger_measurement", "request_waveform", "request_spectrum", "start_impedance_sweep", "start_calibration", "capture_baseline", "reset_baseline", "set_reference_point", "run_self_test", "run_diagnostic", "flush_buffer", "set_time", "identify", "reboot", "factory_reset", "start_ota", "abort_ota", "set_output", "ack_event"]
+        },
+        "issued_ts": { "$ref": "#/$defs/epoch_ms" },
+        "expires_ts": { "$ref": "#/$defs/epoch_ms", "description": "Device must ignore the command after this time." },
+        "priority": { "type": "string", "enum": ["low", "normal", "high"] },
+        "issued_by": { "type": "string", "maxLength": 64 },
+        // "target_channel_id": { "$ref": "#/$defs/id" },
+        "params": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Command-specific parameters (see protocol document)."
+        },
+        "config": { "$ref": "#/$defs/config", "description": "Payload for set_config." },
+      }
+    },
+    "command_ack": {
+      "type": "object",
+      "required": ["command_id", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "command_id": { "$ref": "#/$defs/id" },
+        "result": { "type": "string", "enum": ["accepted", "in_progress", "completed", "rejected", "failed", "expired", "unsupported"] },
+        "error_code": { "type": "string", "maxLength": 32 },
+        "message": { "type": "string", "maxLength": 256 },
+        // "progress_pct": { "$ref": "#/$defs/pct" },
+        "applied_config_version": { "type": "integer", "minimum": 0 },
+        // "result_data": { "type": "object", "additionalProperties": true },
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "description": "Result of a calibration or baseline capture.",
+      "required": ["calibration_type", "channel_id", "state"],
+      "additionalProperties": false,
+      "properties": {
+        // "calibration_id": { "$ref": "#/$defs/id" },
+        "calibration_type": {
+          "type": "string",
+          "enum": ["baseline_dry", "baseline_clear_cold", "zero_offset", "gain", "reference_capacitor", "reference_resistor", "temperature_compensation", "ice_reference", "water_reference", "multi_point", "adc_calibration", "parasitic_capacitance"]
+        },
+        "channel_id": { "$ref": "#/$defs/id" },
+        "state": { "type": "string", "enum": ["started", "in_progress", "completed", "failed", "aborted"] },
+        "method": { "type": "string", "enum": ["automatic", "manual", "commanded"] },
+        "performed_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "valid_until_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "performed_by": { "type": "string", "maxLength": 64 },
+        "conditions": {
+          "type": "object",
+          "description": "Conditions during calibration; essential to interpret the baseline.",
+          "additionalProperties": false,
+          "properties": {
+            // "air_temperature_c": { "type": "number" },
+            "coil_surface_temperature_c": { "type": "number" },
+            // "air_humidity_rh": { "$ref": "#/$defs/pct" },
+            // "coil_known_clean_and_dry": { "type": "boolean" },
+            // "hvac_mode": { "type": "string", "enum": ["off", "standby", "cooling", "heating", "fan_only", "defrost", "unknown"] },
+            // "ice_state_known": { "type": "string", "enum": ["clear", "frost", "ice", "unknown"] },
+          }
+        },
+        // "reference": {
+        //   "type": "object",
+        //   "additionalProperties": false,
+        //   "properties": {
+        //     "value": { "type": "number" },
+        //     "unit": { "type": "string", "maxLength": 16 },
+        //     "description": { "type": "string", "maxLength": 128 },
+        //     "traceable_id": { "type": "string", "maxLength": 64 },
+        //   }
+        // },
+        // "points": {
+        //   "type": "array",
+        //   "description": "Calibration points (x = raw / measured, y = reference).",
+        //   "items": {
+        //     "type": "object",
+        //     "required": ["x", "y"],
+        //     "additionalProperties": false,
+        //     "properties": {
+        //       "x": { "type": "number" },
+        //       "y": { "type": "number" },
+        //       "label": { "type": "string", "maxLength": 32 },
+        //     }
+        //   }
+        // },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            // "offset": { "type": "number" },
+            // "gain": { "type": "number" },
+            "baseline_value": { "type": "number" },
+            "baseline_unit": { "type": "string", "maxLength": 16 },
+            // "coefficients": { "type": "array", "items": { "type": "number" } },
+            // "residual_rms": { "type": "number", "minimum": 0 },
+            "noise_floor": { "type": "number", "minimum": 0 },
+            "samples_used": { "type": "integer", "minimum": 0 },
+          }
+        },
+        // "error_code": { "type": "string", "maxLength": 32 },
+        // "message": { "type": "string", "maxLength": 256 },
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "description": "Self-test and electrode / wiring integrity results.",
+      "required": ["diagnostic_type", "results"],
+      "additionalProperties": false,
+      "properties": {
+        // "diagnostic_id": { "$ref": "#/$defs/id" },
+        // "diagnostic_type": {
+        //   "type": "string",
+        //   "enum": ["self_test", "electrode_integrity", "wiring_check", "noise_analysis", "leakage_check", "shield_check", "adc_calibration_check", "reference_check", "frontend_check", "sweep", "full"]
+        // },
+        // "performed_ts": { "$ref": "#/$defs/epoch_ms" },
+        // "duration_ms": { "type": "integer", "minimum": 0 },
+        // "overall": { "type": "string", "enum": ["pass", "warn", "fail"] },
+        // "results": {
+        //   "type": "array",
+        //   "items": {
+        //     "type": "object",
+        //     "required": ["check", "result"],
+        //     "additionalProperties": false,
+        //     "properties": {
+        //       "check": {
+        //         "type": "string",
+        //         "maxLength": 64,
+        //         "description": "e.g. open_circuit_test, short_test, reference_cap_error, noise_floor, adc_offset, i2c_presence"
+        //       },
+        //       "channel_id": { "$ref": "#/$defs/id" },
+        //       "result": { "type": "string", "enum": ["pass", "warn", "fail", "skipped"] },
+        //       "value": { "type": "number" },
+        //       "unit": { "type": "string", "maxLength": 16 },
+        //       "limit_min": { "type": "number" },
+        //       "limit_max": { "type": "number" },
+        //       "note": { "type": "string", "maxLength": 256 },
+        //     }
+        //   }
+        // },
+        // "spectrum": { "$ref": "#/$defs/spectrum" },
+        // "waveform": { "$ref": "#/$defs/waveform" },
+      }
+    },
+    "log": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": {
+        // "entries": {
+        //   "type": "array",
+        //   "minItems": 1,
+        //   "maxItems": 50,
+        //   "items": {
+        //     "type": "object",
+        //     "required": ["ts", "level", "message"],
+        //     "additionalProperties": false,
+        //     "properties": {
+        //       "ts": { "$ref": "#/$defs/epoch_ms" },
+        //       "uptime_ms": { "type": "integer", "minimum": 0 },
+        //       "level": { "type": "string", "enum": ["error", "warn", "info", "debug", "verbose"] },
+        //       "tag": { "type": "string", "maxLength": 24 },
+        //       "message": { "type": "string", "maxLength": 256 },
+        //       "code": { "type": "integer" },
+        //     }
+        //   }
+        // },
+        // "dropped_entries": { "type": "integer", "minimum": 0 },
+      }
+    }
+  }
+}
