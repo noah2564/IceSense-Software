@@ -22,6 +22,9 @@ check(all(t.rsplit("/", 1)[1] == m["message_type"] and t.split("/")[2] == m["dev
 check([m["seq"] for _, m, _ in msgs] == list(range(len(msgs))), "seq strictly increasing from 0")
 tel = [m for _, m, _ in msgs if m["message_type"] == "telemetry"]
 check(290 <= len(tel) <= 330, f"about one telemetry message per 2 s window ({len(tel)})")
+status = next((m["status"] for _, m, _ in msgs if m["message_type"] == "status"), None)
+cap_status = next((s for s in status["sensors"] if s["channel_id"] == "cap-1"), {}) if status else {}
+check(cap_status.get("baseline_valid") is False, "persisted zero baseline is reported invalid after reboot")
 
 # ---- on-device detection produced the expected cycle
 seq = []
@@ -48,6 +51,12 @@ def find(t, method, path, auth="auth"):
     return next(r for r in rows if int(r[0]) == t and r[1] == method and r[2] == path and r[3] == auth)
 def state_at(t): return json.loads(find(t, "GET", "/api/state")[5])
 check(find(6, "GET", "/api/state", "noauth")[4] == "401", "request without credentials is refused (401)")
+for path in ("/generate_204", "/hotspot-detect.html", "/connecttest.txt"):
+    row = find(0, "GET", path, "noauth")
+    check(row[4] == "302" and "Location: /" in row[5], f"{path} redirects unauthenticated clients to /")
+redirect = find(0, "GET", "/redirect", "noauth")
+check(redirect[4] == "302" and "Location: http://www.msftconnecttest.com/" in redirect[5],
+      "/redirect sends unauthenticated clients to the Microsoft connectivity test URL")
 check(find(7, "GET", "/")[4] == "200" and "gz" in find(7, "GET", "/")[5], "page served")
 check(find(8, "POST", "/api/params")[4] == "200", "valid parameter change accepted")
 bad = [r for r in rows if r[2] == "/api/params" and r[4] == "400"]

@@ -1,4 +1,8 @@
 .deps/
 .harness
+.harness0
+.harness1
 out.tsv
 err.log
+err0.log
+trace.csv

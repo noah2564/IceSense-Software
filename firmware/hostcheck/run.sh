@@ -10,7 +10,10 @@ python3 trace.py
 for MQ in 1 0; do
   g++ -std=c++17 -O1 -Wall -Wextra -Wno-unused-parameter \
     -DARDUINOJSON_USE_LONG_LONG=1 -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -DCONFIG_IDF_TARGET_ESP32S3=1 -DMQTT_ENABLED=$MQ \
-    -Istubs -I.deps/ArduinoJson/src -I../src -I../include -I../lib/icedetect harness.cpp ../lib/icedetect/icedetect.cpp -o .harness$MQ
+    -Istubs -I.deps/ArduinoJson/src -I../src -I../include -I../lib/icedetect \
+    -I../lib/lm75b -I../lib/mcp3426 -I../lib/fdc2214 \
+    harness.cpp ../lib/icedetect/icedetect.cpp ../lib/lm75b/lm75b.cpp \
+    ../lib/mcp3426/mcp3426.cpp ../lib/fdc2214/fdc2214.cpp -o .harness$MQ
 done
 ./.harness1 > out.tsv 2> err.log
 ./.harness0 > /dev/null 2> err0.log      # same firmware with MQTT compiled out must also build and run

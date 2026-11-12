@@ -1,5 +1,5 @@
 // Runs the REAL firmware main.cpp on the PC against fake hardware. A synthetic frost/defrost cycle is
-// replayed as ADC/touch values; HTTP requests are issued like a browser would; every MQTT message the
+// replayed through simulated I2C sensors; HTTP requests are issued like a browser would; every MQTT message the
 // firmware would publish goes to stdout (TOPIC<TAB>PAYLOAD), HTTP exchanges to http.tsv.
 #define ICE_HOST_TEST 1
 #include <cstdlib>
@@ -9,7 +9,10 @@
 #include "main.cpp"
 
 SerialStub Serial; EspStub ESP; WiFiStub WiFi; MDNSStub MDNS; LittleFSStub LittleFS;
-uint32_t g_millis = 0; double g_ntc_mv = 1900, g_res_mv = 1200, g_touch = 50000; bool g_broker_up = false;
+uint32_t g_millis = 0;
+double g_temperature_c = 0, g_cap_delta_pct = 0, g_trace_log10r = 0;
+bool g_fdc_high_address = false, g_broker_up = false;
+TwoWire Wire(false), Wire1(true);
 
 struct Row { double temp, cap, log10r; };
 static std::vector<Row> trace;
@@ -17,18 +20,16 @@ static FILE* httpLog;
 
 static void http(const char* method, const char* path, const char* body = "", bool auth = true) {
   web.request(method, path, body, auth);
-  std::string o = web.out;
+  std::string o = web.headers + web.out;
   for (auto& c : o) if (c == '\n' || c == '\t') c = ' ';
   fprintf(httpLog, "%u\t%s\t%s\t%s\t%d\t%s\n", g_millis / 1000, method, path, auth ? "auth" : "noauth", web.code, o.c_str());
 }
 static void feed(double sec) {
   size_t i = (size_t)(sec * 10); if (i >= trace.size()) i = trace.size() - 1;
   const Row& r = trace[i];
-  g_touch = 60000.0 * (1 + r.cap / 100.0);
-  double rohm = pow(10.0, r.log10r);
-  g_res_mv = 3300.0 * rohm / (RES_R_REF_OHM + rohm);
-  double rn = NTC_R0_OHM * exp(NTC_BETA * (1.0 / (r.temp + 273.15) - 1.0 / 298.15));
-  g_ntc_mv = 3300.0 * rn / (NTC_R_FIXED_OHM + rn);
+  g_temperature_c = r.temp;
+  g_cap_delta_pct = r.cap;
+  g_trace_log10r = r.log10r;
 }
 
 int main() {
@@ -36,7 +37,19 @@ int main() {
   while (std::getline(in, line)) { Row r; sscanf(line.c_str(), "%lf,%lf,%lf", &r.temp, &r.cap, &r.log10r); trace.push_back(r); }
   httpLog = fopen("http.tsv", "w");
   g_broker_up = true;
+  prefs.putFloat("capbase", 0);  // simulate the persisted "no baseline" sentinel
   setup();
+  if (!dnsServer.started || dnsServer.port != 53 || dnsServer.domain != "*" ||
+      dnsServer.address.bytes[0] != 192 || dnsServer.address.bytes[1] != 168 ||
+      dnsServer.address.bytes[2] != 4 || dnsServer.address.bytes[3] != 1) {
+    fprintf(stderr, "DNS responder did not start with the captive-portal address\n");
+    return 1;
+  }
+  http("GET", "/generate_204", "", false);
+  http("GET", "/hotspot-detect.html", "", false);
+  http("GET", "/connecttest.txt", "", false);
+  http("GET", "/redirect", "", false);
+  sendStatus();
   uint32_t nextSensor = 0; bool did[24] = {};
   auto at = [&](int s, int k) { if (g_millis / 1000 >= (uint32_t)s && !did[k]) { did[k] = true; return true; } return false; };
   while (g_millis < 640000) {
@@ -72,6 +85,10 @@ int main() {
     }
     g_millis += 10;
     loop();
+  }
+  if (!dnsServer.processCalls) {
+    fprintf(stderr, "DNS responder was not serviced by the main loop\n");
+    return 1;
   }
   fclose(httpLog);
   return 0;

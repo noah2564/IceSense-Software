@@ -12,6 +12,7 @@ typedef uint8_t byte;
 #define HIGH 1
 #define LOW 0
 #define OUTPUT 1
+#define INPUT 0
 #define ADC_11db 3
 #define WL_CONNECTED 3
 template <class T, class L, class H> T constrain(T x, L lo, H hi) { return x < lo ? (T)lo : (x > hi ? (T)hi : x); }

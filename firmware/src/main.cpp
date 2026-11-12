@@ -1,6 +1,6 @@
 // ICE-SENSE node, edge-first.
 //
-//   sensor task (core 1): sample touch pad / resistive divider / NTC -> aggregate one window
+//   sensor task (core 1): read LM75B / MCP3426 on Wire and FDC2214 on Wire1 -> aggregate one window
 //   main loop           : web server, optional MQTT, detection (icedetect), relay, history
 //
 // The device detects ice by itself and works without any server. The technician reaches it at
@@ -9,11 +9,13 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <Wire.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -24,7 +26,10 @@
 #include <deque>
 
 #include "config.h"
+#include "fdc2214.h"
 #include "icedetect.h"
+#include "lm75b.h"
+#include "mcp3426.h"
 #include "secrets.h"
 
 #if MQTT_ENABLED
@@ -44,13 +49,17 @@
 using icedetect::State;
 static Preferences prefs;
 static WebServer web(80);
+static DNSServer dnsServer;
+static LM75B lm75(Wire, LM75B_I2C_ADDRESS);
+static MCP3426 mcp3426(Wire, MCP3426_I2C_ADDRESS);
+static FDC2214 fdc2214(Wire1, FDC2214_I2C_ADDRESS_LOW, PIN_FDC2214_SD);
 
 // ============================================================================ settings
 struct Settings {
   uint32_t version = 0;
   uint32_t windowMs = DEFAULT_WINDOW_S * 1000UL;
-  float capBase = NAN;      // touch counts of the clean sensor; NAN = never captured
-  float resBase = NAN;      // ohm of the clean sensor (informational)
+  float capBase = NAN;      // FDC2214 channel-0 code of the clean sensor; NAN = never captured
+  float resBase = NAN;      // measured MCP3426 voltage (informational)
   uint64_t baseTs = 0;
   bool relayEnabled = false;   // default OFF: the relay never switches until a technician enables it
 } cfg;
@@ -101,13 +110,15 @@ static RStats snap(const Stats& s) { return {s.n, (float)s.mean, (float)s.mn, (f
 struct RawWindow {          // sensor task -> main loop
   uint64_t startStamp, endStamp;
   uint32_t durationMs, tempFailures;
-  RStats cap, res, resV, temp, ntcR;
+  bool resOpen, resShort, fdcFault;
+  RStats cap, res, resV, temp;
 };
 
-static Stats stCap, stRes, stResV, stTemp, stNtcR;
+static Stats stCap, stRes, stResV, stTemp;
 static uint32_t tempFailures = 0, windowStartMs = 0;
+static bool windowResOpen = false, windowResShort = false, windowFdcFault = false;
 static uint64_t windowStartStamp = 0;
-static float rollCap[ROLL_LEN], rollRes[ROLL_LEN];
+static float rollCap[ROLL_LEN], rollResV[ROLL_LEN];
 static int rollN = 0, rollPos = 0;
 static SemaphoreHandle_t rollMux;
 static QueueHandle_t winQueue;
@@ -124,7 +135,7 @@ struct Last {
   bool defrost = false, relayOn = false;
   uint32_t sinceMs = 0;
 } last;
-static bool tempFaultActive = false, resOpen = false, resShort = false;
+static bool tempFaultActive = false, resOpen = false, resShort = false, fdcFaultActive = false;
 
 static char deviceId[24];
 static uint32_t bootCount = 0, seqCounter = 0;
@@ -175,6 +186,7 @@ static void loadSettings() {
   cfg.windowMs = prefs.getUInt("winms", DEFAULT_WINDOW_S * 1000UL);
   if (cfg.windowMs < MIN_WINDOW_S * 1000UL || cfg.windowMs > MAX_WINDOW_S * 1000UL) cfg.windowMs = DEFAULT_WINDOW_S * 1000UL;
   cfg.capBase = prefs.getFloat("capbase", NAN);
+  if (!(cfg.capBase > 0)) cfg.capBase = NAN;
   cfg.resBase = prefs.getFloat("resbase", NAN);
   cfg.baseTs = prefs.getULong64("basets", 0);
   cfg.relayEnabled = prefs.getUInt("relayen", 0) == 1;
@@ -195,51 +207,107 @@ static void saveSettings() {
 }
 
 // ============================================================================ sensors (sensor task)
-static uint32_t readMvAvg(int pin, int n) { uint32_t s = 0; for (int i = 0; i < n; i++) s += analogReadMilliVolts(pin); return s / n; }
-static double readTouchAvg() { double s = 0; for (int i = 0; i < 4; i++) s += touchRead(PIN_TOUCH); return s / 4.0; }
-
-// Excitation is ON only during the measurement (power, electrode corrosion).
-static void readResistive(double& rOhm, double& volts) {
-  digitalWrite(PIN_RES_EXCITE, HIGH);
-  delay(RES_SETTLE_MS);
-  uint32_t mv = readMvAvg(PIN_RES_ADC, 8);
-  digitalWrite(PIN_RES_EXCITE, LOW);
-  volts = mv / 1000.0;
-  double v = constrain(volts, 0.001, ADC_VCC - 0.001);
-  rOhm = RES_R_REF_OHM * v / (ADC_VCC - v);
-  rOhm = constrain(rOhm, RES_MIN_OHM, RES_MAX_OHM);
+static void scanI2c(TwoWire& bus, const char* busName) {
+  uint8_t found = 0;
+  for (uint8_t address = 1; address < 0x7F; address++) {
+    bus.beginTransmission(address);
+    if (bus.endTransmission() == 0) {
+      Serial.printf("I2C %s found 0x%02X\n", busName, address);
+      found++;
+    }
+  }
+  if (!found) Serial.printf("I2C %s found no devices\n", busName);
 }
-static bool readNtc(double& tempC, double& rOhm) {
-  uint32_t mv = readMvAvg(PIN_NTC_ADC, 8);
-  if (mv < 50 || mv > 3250) return false;
-  double v = mv / 1000.0;
-  rOhm = NTC_R_FIXED_OHM * v / (ADC_VCC - v);
-  tempC = 1.0 / (1.0 / 298.15 + log(rOhm / NTC_R0_OHM) / NTC_BETA) - 273.15;
-  return true;
+static void initSensors() {
+  pinMode(PIN_FDC2214_INTB, INPUT);
+  Wire.begin(PIN_I2C_A_SDA, PIN_I2C_A_SCL, I2C_CLOCK_HZ);
+  Wire1.begin(PIN_I2C_B_SDA, PIN_I2C_B_SCL, I2C_CLOCK_HZ);
+  Wire.setTimeOut(I2C_TIMEOUT_MS);
+  Wire1.setTimeOut(I2C_TIMEOUT_MS);
+  scanI2c(Wire, "Wire");
+  scanI2c(Wire1, "Wire1");
+
+  LM75B::Error temperatureError;
+  if (!lm75.begin(I2C_TIMEOUT_MS, temperatureError))
+    Serial.printf("LM75B 0x%02X init failed (%u)\n", LM75B_I2C_ADDRESS, (unsigned)temperatureError);
+  MCP3426::Error adcError;
+  if (!mcp3426.begin(I2C_TIMEOUT_MS, adcError))
+    Serial.printf("MCP3426 0x%02X reset failed (%u)\n", MCP3426_I2C_ADDRESS, (unsigned)adcError);
+  FDC2214::Config fdcConfig{FDC2214_RCOUNT_CH0, FDC2214_SETTLECOUNT_CH0,
+                            FDC2214_CLOCK_DIVIDERS_CH0, FDC2214_DRIVE_CURRENT_CH0,
+                            FDC2214_CONFIG_CH0, FDC2214_MUX_CONFIG_CH0,
+                            FDC2214_ERROR_CONFIG, FDC2214_TANK_SETTINGS_VALID != 0};
+  FDC2214::Error fdcError;
+  if (!fdc2214.begin(fdcConfig, I2C_TIMEOUT_MS, FDC2214_POWERUP_DELAY_MS,
+                     FDC2214_RESET_DELAY_MS, fdcError)) {
+    fdc2214.setAddress(FDC2214_I2C_ADDRESS_HIGH);
+    if (!fdc2214.begin(fdcConfig, I2C_TIMEOUT_MS, FDC2214_POWERUP_DELAY_MS,
+                       FDC2214_RESET_DELAY_MS, fdcError))
+      Serial.printf("FDC2214 init failed at 0x%02X/0x%02X (%u)\n", FDC2214_I2C_ADDRESS_LOW,
+                    FDC2214_I2C_ADDRESS_HIGH, (unsigned)fdcError);
+  }
+}
+
+static double voltageToResistancePlaceholder(float voltage) {
+#ifdef ICE_HOST_TEST
+  extern double g_trace_log10r;
+  (void)voltage;
+  return pow(10.0, g_trace_log10r); // Synthetic-only feature supplied by the trace harness.
+#else
+  (void)voltage;
+  // TODO: derive this conversion only after the MCP3426 analog front end is identified.
+  return NAN;
+#endif
 }
 
 static void resetWindow() {
-  stCap.reset(); stRes.reset(); stResV.reset(); stTemp.reset(); stNtcR.reset();
+  stCap.reset(); stRes.reset(); stResV.reset(); stTemp.reset();
   tempFailures = 0;
+  windowResOpen = windowResShort = windowFdcFault = false;
   windowStartMs = millis();
   windowStartStamp = stampMs();
 }
 
 // One sample; closes the window when its time is up. Called by the sensor task (or by the host test).
 static void sensorTick() {
-  double c = readTouchAvg(), r, v, t, rn;
-  readResistive(r, v);
-  stCap.add(c); stRes.add(r); stResV.add(v);
-  if (readNtc(t, rn)) { stTemp.add(t); stNtcR.add(rn); } else tempFailures++;
+  uint32_t capCode = 0;
+  FDC2214::Error fdcError;
+  const bool capOk = fdc2214.readCode(FDC2214_CONVERSION_TIMEOUT_MS, capCode, fdcError);
+  if (capOk) stCap.add(capCode); else windowFdcFault = true;
+
+  int32_t resCode = 0;
+  float volts = NAN;
+  bool saturated = false;
+  MCP3426::Error adcError;
+  const bool resOk = mcp3426.readVoltage(MCP3426_CHANNEL, MCP3426_RESOLUTION_BITS, MCP3426_GAIN,
+                                         MCP3426_CONTINUOUS, MCP3426_CONVERSION_TIMEOUT_MS,
+                                         MCP3426_REFERENCE_V, resCode, volts, saturated, adcError);
+  if (resOk) {
+    stResV.add(volts);
+    if (saturated) {
+      if (resCode >= 0) windowResOpen = true;
+      else windowResShort = true;
+    }
+    const double resistance = voltageToResistancePlaceholder(volts);
+    if (isfinite(resistance) && resistance > 0) stRes.add(resistance);
+  }
+
+  float temperatureC = NAN;
+  LM75B::Error temperatureError;
+  if (lm75.readTemperatureC(temperatureC, temperatureError)) stTemp.add(temperatureC);
+  else tempFailures++;
+
   xSemaphoreTake(rollMux, portMAX_DELAY);
-  rollCap[rollPos] = (float)c; rollRes[rollPos] = (float)r;
+  rollCap[rollPos] = capOk ? (float)capCode : NAN;
+  rollResV[rollPos] = resOk ? volts : NAN;
   rollPos = (rollPos + 1) % ROLL_LEN;
   if (rollN < ROLL_LEN) rollN++;
   xSemaphoreGive(rollMux);
 
   if (millis() - windowStartMs >= gWindowMs) {
     RawWindow w{windowStartStamp, stampMs(), millis() - windowStartMs, tempFailures,
-                snap(stCap), snap(stRes), snap(stResV), snap(stTemp), snap(stNtcR)};
+                windowResOpen, windowResShort, windowFdcFault,
+                snap(stCap), snap(stRes), snap(stResV), snap(stTemp)};
     if (xQueueSend(winQueue, &w, 0) != pdTRUE) winDropped++;
     resetWindow();
   }
@@ -247,6 +315,7 @@ static void sensorTick() {
 #ifndef ICE_HOST_TEST
 static void sensorTask(void*) {
   const TickType_t period = pdMS_TO_TICKS(1000 / SAMPLE_RATE_HZ);
+  initSensors();
   TickType_t wake = xTaskGetTickCount();
   for (;;) { sensorTick(); vTaskDelayUntil(&wake, period); }
 }
@@ -353,35 +422,39 @@ static void sendTelemetry(const RawWindow& w) {
     JsonObject c = chs.add<JsonObject>();
     c["channel_id"] = "cap-1"; c["kind"] = "capacitive";
     JsonObject k = c["capacitive"].to<JsonObject>();
-    k["raw_counts"] = rnd(w.cap.mean, 1);
-    if (haveBase) k["delta_pct"] = rnd((w.cap.mean - cfg.capBase) / cfg.capBase * 100.0, 2);
+    if (w.cap.n) k["raw_counts"] = rnd(w.cap.mean, 1);
+    if (haveBase && w.cap.n) k["delta_pct"] = rnd((w.cap.mean - cfg.capBase) / cfg.capBase * 100.0, 2);
     addStats(c, w.cap, 1);
-    const char* fl[] = {"baseline_invalid"};
-    addQuality(c, haveBase ? "good" : "uncertain", fl, haveBase ? 0 : 1);
+    const char* fl[2]; int nf = 0;
+    if (!haveBase) fl[nf++] = "baseline_invalid";
+    if (!w.cap.n) fl[nf++] = "sensor_disconnected";
+    addQuality(c, !w.cap.n ? "bad" : (haveBase ? "good" : "uncertain"), fl, nf);
   }
   {
     JsonObject c = chs.add<JsonObject>();
     c["channel_id"] = "res-1"; c["kind"] = "resistive";
     JsonObject k = c["resistive"].to<JsonObject>();
-    k["voltage_v"] = rnd(w.resV.mean, 3);
-    k["resistance_ohm"] = rnd(w.res.mean, 0);
-    k["log10_resistance"] = rnd(log10(w.res.mean), 3);
+    if (w.resV.n) k["voltage_v"] = rnd(w.resV.mean, 3);
+    if (w.res.n) {
+      k["resistance_ohm"] = rnd(w.res.mean, 0);
+      k["log10_resistance"] = rnd(log10(w.res.mean), 3);
+    }
     if (resOpen) k["open_circuit"] = true;
     if (resShort) k["short_circuit"] = true;
     addStats(c, w.res, 0);
-    const char* fl[2]; int nf = 0;
+    const char* fl[3]; int nf = 0;
     if (resOpen) fl[nf++] = "open_circuit";
     if (resShort) fl[nf++] = "short_circuit";
-    addQuality(c, nf ? "uncertain" : "good", fl, nf);
+    if (!w.resV.n) fl[nf++] = "sensor_disconnected";
+    addQuality(c, !w.resV.n ? "bad" : ((resOpen || resShort) ? "uncertain" : "good"), fl, nf);
   }
   {
     JsonObject c = chs.add<JsonObject>();
     c["channel_id"] = "temp-coil"; c["kind"] = "temperature";
     JsonObject th = c["thermal"].to<JsonObject>();
-    th["sensor_type"] = "ntc"; th["location"] = "coil_surface"; th["ntc_beta"] = NTC_BETA;
+    th["sensor_type"] = "lm75b"; th["location"] = "coil_surface";
     if (w.temp.n > 0) {
       th["temperature_c"] = rnd(w.temp.mean, 2);
-      th["resistance_ohm"] = rnd(w.ntcR.mean, 0);
       th["below_freezing"] = w.temp.mean <= 0.0;
       addStats(c, w.temp, 2);
       addQuality(c, "good", nullptr, 0);
@@ -403,7 +476,7 @@ static void sendStatus() {
   beginMessage(doc, "status");
   addFirmware(doc);
   JsonObject st = doc["status"].to<JsonObject>();
-  st["health"] = tempFaultActive ? "degraded" : "ok";
+  st["health"] = (tempFaultActive || fdcFaultActive || resOpen || resShort) ? "degraded" : "ok";
   JsonObject c = st["connectivity"].to<JsonObject>();
   c["link"] = "wifi"; c["connected"] = mqttUp(); c["rssi_dbm"] = WiFi.RSSI() < 0 ? WiFi.RSSI() : -127;
   c["transport"] = "mqtt"; c["broker_connected"] = mqttUp(); c["reconnect_count"] = reconnects;
@@ -420,8 +493,8 @@ static void sendStatus() {
   b["storage"] = "ram"; b["queued_messages"] = (uint32_t)outq.size(); b["capacity_messages"] = OUTQ_MAX;
   b["dropped_messages"] = dropped + winDropped; b["overflow_policy"] = "drop_oldest";
   JsonArray sensors = st["sensors"].to<JsonArray>();
-  bool capBase = !isnan(cfg.capBase);
-  JsonObject s1 = sensors.add<JsonObject>(); s1["channel_id"] = "cap-1"; s1["state"] = "ok"; s1["baseline_valid"] = capBase;
+  bool capBase = !isnan(cfg.capBase) && cfg.capBase > 0;
+  JsonObject s1 = sensors.add<JsonObject>(); s1["channel_id"] = "cap-1"; s1["state"] = fdcFaultActive ? "fault" : "ok"; s1["baseline_valid"] = capBase;
   JsonObject s2 = sensors.add<JsonObject>(); s2["channel_id"] = "res-1"; s2["state"] = (resOpen || resShort) ? "degraded" : "ok";
   JsonObject s3 = sensors.add<JsonObject>(); s3["channel_id"] = "temp-coil"; s3["state"] = tempFaultActive ? "fault" : "ok";
   enqueue("status", doc);
@@ -431,18 +504,21 @@ static void sendStatus() {
 static void processWindow(const RawWindow& w) {
   bool haveBase = !isnan(cfg.capBase) && cfg.capBase > 0;
   icedetect::Input in;
-  if (haveBase) in.cap_delta_pct = (w.cap.mean - cfg.capBase) / cfg.capBase * 100.0;
+  // FDC2214 count changes follow LC frequency, not capacitance percent. Keep the existing
+  // feature for now, but recalibrate deposit_pct/ice_pct/mm_per_pct against real sensor data.
+  if (haveBase && w.cap.n) in.cap_delta_pct = (w.cap.mean - cfg.capBase) / cfg.capBase * 100.0;
   if (w.res.n) in.res_log10 = log10(w.res.mean);
   if (w.temp.n) in.temp_c = w.temp.mean;
-  resOpen = w.resV.mean * 1000.0 > RES_OPEN_MV;
-  resShort = w.resV.mean * 1000.0 < RES_SHORT_MV;
+  resOpen = w.resOpen;
+  resShort = w.resShort;
 
   icedetect::Output out = det.step(in);
   State prev = last.state;
   bool prevDefrost = last.defrost;
   if (!last.valid || out.state != prev) last.sinceMs = millis();
   last.valid = true; last.state = out.state; last.thick = out.thickness_mm; last.defrost = out.defrost_request;
-  last.cap = in.cap_delta_pct; last.resl = in.res_log10; last.temp = in.temp_c; last.counts = w.cap.mean;
+  last.cap = in.cap_delta_pct; last.resl = in.res_log10; last.temp = in.temp_c;
+  last.counts = w.cap.n ? w.cap.mean : NAN;
   relayApply();
 
   Serial.printf("%s thick=%.2f mm defrost=%d cap=%.2f%% R=%.2f temp=%.1f counts=%.0f\n", icedetect::stateName(last.state), last.thick, last.defrost, last.cap, last.resl, last.temp, last.counts);
@@ -455,6 +531,11 @@ static void processWindow(const RawWindow& w) {
   if (tempFault != tempFaultActive) {
     tempFaultActive = tempFault;
     sendEvent("sensor_fault", tempFault ? "warning" : "info", tempFault ? "raised" : "cleared", "coil temperature sensor");
+  }
+  const bool fdcFault = w.fdcFault || w.cap.n == 0;
+  if (fdcFault != fdcFaultActive) {
+    fdcFaultActive = fdcFault;
+    sendEvent("sensor_fault", fdcFault ? "warning" : "info", fdcFault ? "raised" : "cleared", "FDC2214 capacitive sensor");
   }
   if (out.state != prev) {
     char m[64];
@@ -488,11 +569,17 @@ static bool applyParams(JsonObjectConst o, String& err) {
 }
 static bool captureBaseline(String& err) {
   xSemaphoreTake(rollMux, portMAX_DELAY);
-  int n = rollN; double a = 0, b = 0;
-  for (int i = 0; i < n; i++) { a += rollCap[i]; b += rollRes[i]; }
+  int n = rollN, capN = 0, resN = 0;
+  double a = 0, b = 0;
+  for (int i = 0; i < n; i++) {
+    if (isfinite(rollCap[i])) { a += rollCap[i]; capN++; }
+    if (isfinite(rollResV[i])) { b += rollResV[i]; resN++; }
+  }
   xSemaphoreGive(rollMux);
-  if (n < BASELINE_MIN_SAMPLES) { err = "not enough samples yet, retry in a few seconds"; return false; }
-  cfg.capBase = (float)(a / n); cfg.resBase = (float)(b / n); cfg.baseTs = stampMs();
+  if (capN < BASELINE_MIN_SAMPLES) { err = "not enough capacitive samples yet, retry in a few seconds"; return false; }
+  cfg.capBase = (float)(a / capN);
+  cfg.resBase = resN ? (float)(b / resN) : NAN;
+  cfg.baseTs = stampMs();
   cfg.version++;
   saveSettings();
   det.reset();
@@ -559,6 +646,17 @@ static void setupWeb() {
     File f = LittleFS.open("/index.html.gz", "r");
     web.streamFile(f, "text/html");
     f.close();
+  });
+  auto redirectToRoot = []() {
+    web.sendHeader("Location", "/");
+    web.send(302, "text/plain", "");
+  };
+  web.on("/generate_204", HTTP_GET, redirectToRoot);
+  web.on("/hotspot-detect.html", HTTP_GET, redirectToRoot);
+  web.on("/connecttest.txt", HTTP_GET, redirectToRoot);
+  web.on("/redirect", HTTP_GET, []() {
+    web.sendHeader("Location", "http://www.msftconnecttest.com/");
+    web.send(302, "text/plain", "");
   });
   web.on("/api/state", HTTP_GET, []() { if (authed()) sendState(); });
   web.on("/api/history.csv", HTTP_GET, []() { if (authed()) historyCsv(); });
@@ -696,15 +794,14 @@ void setup() {
   Serial.printf("\n%s fw %s boot #%lu\n", deviceId, FW_VERSION, (unsigned long)bootCount);
   if (!strcmp(UI_PASS, "change-me-now")) Serial.println("WARNING: default UI password, change it in secrets.h");
 
-  pinMode(PIN_RES_EXCITE, OUTPUT);
-  digitalWrite(PIN_RES_EXCITE, LOW);
-  analogSetAttenuation(ADC_11db);
   LittleFS.begin(true);
 
   WiFi.mode(WIFI_AP_STA);
   char ap[40];
   snprintf(ap, sizeof ap, "%s%s", AP_SSID_PREFIX, deviceId + strlen(deviceId) - 4);
   WiFi.softAP(ap, AP_PASS);
+  if (!dnsServer.start(53, "*", IPAddress(192, 168, 4, 1)))
+    Serial.println("WARNING: DNS responder failed to start");
   if (strlen(WIFI_SSID)) { WiFi.setAutoReconnect(true); WiFi.begin(WIFI_SSID, WIFI_PASS); configTime(0, 0, "pool.ntp.org", "time.google.com"); }
   MDNS.begin(ap);
 #if MQTT_ENABLED
@@ -722,7 +819,9 @@ void setup() {
   rollMux = xSemaphoreCreateMutex();
   winQueue = xQueueCreate(WIN_QUEUE_LEN, sizeof(RawWindow));
   resetWindow();
-#ifndef ICE_HOST_TEST
+#ifdef ICE_HOST_TEST
+  initSensors();
+#else
   xTaskCreatePinnedToCore(sensorTask, "sensor", 4096, nullptr, 3, nullptr, 1);
 #endif
   nextStatusMs = millis() + STATUS_INTERVAL_S * 1000UL;
@@ -730,6 +829,7 @@ void setup() {
 
 void loop() {
   uint32_t now = millis();
+  dnsServer.processNextRequest();
   web.handleClient();
   serviceNetwork(now);
   if (cmdInbox.length()) { String raw = cmdInbox; cmdInbox = ""; handleCommand(raw); }

@@ -468,7 +468,7 @@
         // "temperature_filtered_c": { "type": "number", "minimum": -273.15 },
         "sensor_type": {
           "type": "string",
-          "enum": ["ntc", "ptc", "rtd_pt100", "rtd_pt1000", "thermocouple_k", "thermocouple_t", "ds18b20", "sht_digital", "tmp117", "esp32_internal", "other"]
+          "enum": ["ntc", "lm75b", "ptc", "rtd_pt100", "rtd_pt1000", "thermocouple_k", "thermocouple_t", "ds18b20", "sht_digital", "tmp117", "esp32_internal", "other"]
         },
         "location": {
           "type": "string",
