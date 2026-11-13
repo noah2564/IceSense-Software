@@ -71,9 +71,8 @@ bool MCP3426::decodeCode(uint16_t raw, uint8_t resolutionBits, int32_t& code, Er
     error = Error::InvalidConfig;
     return false;
   }
-  const uint8_t shift = (uint8_t)(16 - resolutionBits);
   const uint32_t mask = (1UL << resolutionBits) - 1;
-  uint32_t value = (raw >> shift) & mask;
+  uint32_t value = raw & mask;
   if (value & (1UL << (resolutionBits - 1))) value |= ~mask;
   code = (int32_t)value;
   error = Error::None;

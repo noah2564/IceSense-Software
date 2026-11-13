@@ -17,7 +17,8 @@ constexpr uint8_t REG_RESET_DEV = 0x1C;
 constexpr uint8_t REG_DRIVE_CURRENT_CH0 = 0x1E;
 constexpr uint8_t REG_MANUFACTURER_ID = 0x7E;
 constexpr uint8_t REG_DEVICE_ID = 0x7F;
-constexpr uint16_t STATUS_ERR_WD = 1u << 12;
+constexpr uint16_t STATUS_ERR_WD = 1u << 11;
+constexpr uint16_t STATUS_DRDY = 1u << 6;
 constexpr uint16_t STATUS_CH0_UNREAD_CONVERSION = 1u << 3;
 constexpr uint16_t DATA_MSB_MASK = 0x0FFF;
 constexpr uint32_t CODE_MASK = 0x0FFFFFFF;
@@ -48,20 +49,26 @@ bool FDC2214::begin(const Config& config, uint16_t i2cTimeoutMs, uint16_t poweru
     return false;
   }
 
+  if (!config.tankSettingsValid) {
+    // RESET_DEV restores the datasheet default sleep mode; CONFIG is intentionally not written.
+    error = Error::NotConfigured;
+    return false;
+  }
+  const uint16_t finSelect = (config.clockDividers >> 12) & 0x03;
+  const uint16_t frefDivider = config.clockDividers & 0x03FF;
+  if (config.rcount < 0x0100 || (finSelect != 0x01 && finSelect != 0x02) || frefDivider < 1) {
+    error = Error::InvalidConfig;
+    return false;
+  }
+
   if (!writeRegister(REG_ERROR_CONFIG, config.errorConfig, error) ||
       !writeRegister(REG_MUX_CONFIG, config.muxConfig, error) ||
+      !writeRegister(REG_RCOUNT_CH0, config.rcount, error) ||
+      !writeRegister(REG_SETTLECOUNT_CH0, config.settleCount, error) ||
+      !writeRegister(REG_CLOCK_DIVIDERS_CH0, config.clockDividers, error) ||
+      !writeRegister(REG_DRIVE_CURRENT_CH0, config.driveCurrent, error) ||
       !writeRegister(REG_CONFIG, config.config, error)) return false;
 
-  if (config.tankSettingsValid) {
-    if (config.rcount == 0 || config.settleCount == 0 || config.clockDividers == 0) {
-      error = Error::InvalidConfig;
-      return false;
-    }
-    if (!writeRegister(REG_RCOUNT_CH0, config.rcount, error) ||
-        !writeRegister(REG_SETTLECOUNT_CH0, config.settleCount, error) ||
-        !writeRegister(REG_CLOCK_DIVIDERS_CH0, config.clockDividers, error) ||
-        !writeRegister(REG_DRIVE_CURRENT_CH0, config.driveCurrent, error)) return false;
-  }
   error = Error::None;
   return true;
 }
@@ -75,7 +82,7 @@ bool FDC2214::readCode(uint32_t timeoutMs, uint32_t& code, Error& error) {
       error = Error::DeviceStatus;
       return false;
     }
-    if (status & STATUS_CH0_UNREAD_CONVERSION) break;
+    if ((status & STATUS_DRDY) && (status & STATUS_CH0_UNREAD_CONVERSION)) break;
     if ((uint32_t)(millis() - started) >= timeoutMs) {
       error = Error::Timeout;
       return false;

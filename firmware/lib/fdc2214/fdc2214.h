@@ -5,7 +5,9 @@
 
 class FDC2214 {
  public:
-  enum class Error : uint8_t { None, I2c, Timeout, ManufacturerMismatch, DeviceMismatch, DeviceStatus, InvalidConfig };
+  enum class Error : uint8_t {
+    None, I2c, Timeout, ManufacturerMismatch, DeviceMismatch, DeviceStatus, InvalidConfig, NotConfigured
+  };
   struct Config {
     uint16_t rcount;
     uint16_t settleCount;

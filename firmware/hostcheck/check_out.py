@@ -22,6 +22,13 @@ check(all(t.rsplit("/", 1)[1] == m["message_type"] and t.split("/")[2] == m["dev
 check([m["seq"] for _, m, _ in msgs] == list(range(len(msgs))), "seq strictly increasing from 0")
 tel = [m for _, m, _ in msgs if m["message_type"] == "telemetry"]
 check(290 <= len(tel) <= 330, f"about one telemetry message per 2 s window ({len(tel)})")
+res_channels = [c for c in tel[-1]["telemetry"]["channels"] if c["channel_id"] in ("res-1", "res-2")]
+check(len(res_channels) == 2 and all("voltage_v" in c["resistive"] and
+    "resistance_ohm" in c["resistive"] and "log10_resistance" in c["resistive"] for c in res_channels),
+    "front and back resistive channels report differential voltage, inferred resistance and log10")
+if len(res_channels) == 2:
+    check(res_channels[0]["resistive"]["resistance_ohm"] < res_channels[1]["resistive"]["resistance_ohm"],
+        "combined resistive feature uses the lower-resistance (wetter) side")
 status = next((m["status"] for _, m, _ in msgs if m["message_type"] == "status"), None)
 cap_status = next((s for s in status["sensors"] if s["channel_id"] == "cap-1"), {}) if status else {}
 check(cap_status.get("baseline_valid") is False, "persisted zero baseline is reported invalid after reboot")

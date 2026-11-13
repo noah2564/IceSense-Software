@@ -137,7 +137,10 @@
           "type": "number",
           "description": "Raw value of the sensing peripheral (touch counts, CDC code, ADC code)."
         },
-        "delta_pct": { "type": "number", "description": "Relative change vs baseline." }
+        "delta_pct": {
+          "type": "number",
+          "description": "Relative change vs baseline; for this FDC2214 LC sensor, derived from the squared inverse frequency-code ratio."
+        }
       }
     },
     "resistive": {
@@ -145,15 +148,25 @@
       "description": "Resistive / conductive sensing result (liquid water film vs ice vs dry surface).",
       "additionalProperties": false,
       "properties": {
-        "voltage_v": { "type": "number" },
-        "resistance_ohm": { "type": "number", "minimum": 0 },
+        "voltage_v": {
+          "type": "number",
+          "description": "MCP3426 differential voltage: sensor-node input minus the shared midpoint reference."
+        },
+        "resistance_ohm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Sensor resistance inferred from the divider and MCP3426 input-impedance model using the window-mean voltage."
+        },
         "delta_pct": { "type": "number" },
         "baseline_ohm": { "type": "number", "minimum": 0 },
         "log10_resistance": {
           "type": "number",
-          "description": "Handy when resistance spans many decades (dry vs wet vs frozen)."
+          "description": "Base-10 log of the inferred per-side resistance; handy when resistance spans decades."
         },
-        "open_circuit": { "type": "boolean" },
+        "open_circuit": {
+          "type": "boolean",
+          "description": "Resistance reached the upper model bound; normally indicates a dry sensor."
+        },
         "short_circuit": { "type": "boolean" }
       }
     },
