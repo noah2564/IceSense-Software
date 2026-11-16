@@ -864,8 +864,21 @@ static void connectMqtt() {
 #endif
 static void serviceNetwork(uint32_t now) {
   static uint32_t lastWifiTry = 0, lastMqttTry = (uint32_t)-5000;
-  if (strlen(WIFI_SSID) && WiFi.status() != WL_CONNECTED) {
-    if (now - lastWifiTry > 10000) { lastWifiTry = now; WiFi.disconnect(); WiFi.begin(WIFI_SSID, WIFI_PASS); }
+  static bool staUp = false;
+  bool up = WiFi.status() == WL_CONNECTED;
+  if (up != staUp) {
+    staUp = up;
+    if (up) Serial.printf("WiFi connected to \"%s\": IP %s, RSSI %d dBm\n", WIFI_SSID, WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    else    Serial.println("WiFi connection lost");
+  }
+  if (strlen(WIFI_SSID) && !up) {
+    if (now - lastWifiTry > 10000) {
+      lastWifiTry = now;
+      wl_status_t st = WiFi.status();
+      Serial.printf("WiFi: not connected to \"%s\" (%s), retrying\n", WIFI_SSID,
+                    st == WL_NO_SSID_AVAIL ? "network not found" : st == WL_CONNECT_FAILED ? "connect failed, check password" : "no link yet");
+      WiFi.disconnect(); WiFi.begin(WIFI_SSID, WIFI_PASS);
+    }
     return;
   }
 #if MQTT_ENABLED
