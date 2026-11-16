@@ -5,3 +5,9 @@ hostcheck/.deps/
 hostcheck/.harness
 hostcheck/out.tsv
 hostcheck/err.log
+
+# PlatformIO regenerates these with each machine's absolute paths
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/.browse.c_cpp.db*
+.vscode/ipch
