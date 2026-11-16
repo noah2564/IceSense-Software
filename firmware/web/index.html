@@ -9,7 +9,8 @@
 @media (prefers-color-scheme:dark){:root{--bg:#14171b;--card:#1d2127;--fg:#e8eaed;--mut:#98a2b3;--line:#2d333b;--ok:#4cc38a;--warn:#f0a04b;--bad:#ff6b6b;--ice:#5aa2ff;--acc:#5aa2ff}}
 a{color:inherit;text-decoration:none}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
 main{max-width:900px;margin:0 auto;padding:16px}
-h1{font-size:18px;margin:0}header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+h1{font-size:18px;margin:0}header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.hr{display:flex;align-items:center;gap:10px}.hr form{margin:0}.hr button{padding:4px 10px;font-size:13px}
 .mut{color:var(--mut);font-size:13px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px}
 .top{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:560px){.top{grid-template-columns:1fr}}
@@ -37,7 +38,7 @@ details summary{cursor:pointer;font-weight:600}
 </head>
 <body>
 <main>
-<header><h1>ICE-SENSE <span class="mut" id="dev"></span></h1><span class="mut" id="conn">connecting&hellip;</span></header>
+<header><h1>ICE-SENSE <span class="mut" id="dev"></span></h1><span class="hr"><span class="mut" id="conn">connecting&hellip;</span><form method="post" action="/logout"><button>Log out</button></form></span></header>
 
 <div class="top">
   <section class="card">
@@ -88,10 +89,12 @@ const $=id=>document.getElementById(id);
 const fmt=(v,d=1)=>v==null?"–":Number(v).toFixed(d);
 let cur=null, paramsBuilt=false;
 
+function loggedOut(r){if(r.status===401)location.replace("/login");}  // session expired or device rebooted
 function say(t,bad){const m=$("msg");m.textContent=t;m.className=bad?"err":"";}
 async function api(path,body){
   const o=body===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)};
   const r=await fetch(path,o);
+  loggedOut(r);
   if(!r.ok) throw new Error((await r.text())||r.status);
   return r.json();
 }
@@ -158,7 +161,7 @@ function chart(cv,rows,key,label,color,fixed){
 }
 async function history(){
   try{
-    const r=await fetch("/api/history.csv");if(!r.ok)return;
+    const r=await fetch("/api/history.csv");loggedOut(r);if(!r.ok)return;
     const rows=parseCsv(await r.text());if(rows.length<2)return;
     $("span").textContent=hms(rows[rows.length-1].uptime_s-rows[0].uptime_s);
     const col=n=>getComputedStyle(document.body).getPropertyValue(n).trim();

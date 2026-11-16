@@ -100,6 +100,10 @@
 // ---- Technician web page
 #define HISTORY_LEN                 900   // windows kept in RAM for the charts / CSV (30 min at 2 s)
 #define AP_SSID_PREFIX              "icesense-"
+#define SESSION_SLOTS               4     // browsers that can stay logged in at once (phone, laptop, ...)
+#define SESSION_DAYS                7     // login cookie lifetime; a reboot logs everyone out
+#define LOGIN_MAX_FAILS             5     // wrong passwords in a row before a short lockout
+#define LOGIN_LOCKOUT_S             30
 
 // ---- MQTT (optional, research phase)
 #define OUTQ_MAX            20      // messages kept in RAM while offline (oldest dropped first)

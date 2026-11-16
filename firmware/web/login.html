@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ICE-SENSE · Sign in</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1b1f24;--mut:#667085;--line:#e3e6ea;--bad:#c0262d;--acc:#1c6fd1;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#14171b;--card:#1d2127;--fg:#e8eaed;--mut:#98a2b3;--line:#2d333b;--bad:#ff6b6b;--acc:#5aa2ff}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:16px;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,sans-serif}
+form{width:100%;max-width:340px;display:grid;gap:14px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:28px 24px;box-shadow:0 8px 24px rgb(0 0 0/.08)}
+h1{margin:0;font-size:20px;letter-spacing:.02em}
+.mut{margin:-10px 0 4px;color:var(--mut);font-size:14px}
+label{display:grid;gap:6px;font-size:14px;font-weight:500}
+/* 16px keeps iOS from zooming into the field */
+input{width:100%;font:inherit;font-size:16px;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:11px 12px}
+input:focus{outline:2px solid var(--acc);outline-offset:-1px;border-color:var(--acc)}
+button{font:inherit;font-weight:600;color:#fff;background:var(--acc);border:0;border-radius:8px;padding:12px;margin-top:4px;cursor:pointer}
+#err{margin:0;color:var(--bad);font-size:14px}#err:empty{display:none}
+</style>
+</head>
+<body>
+<form method="post" action="/login">
+  <h1>ICE-SENSE</h1>
+  <p class="mut">Sign in to manage this sensor.</p>
+  <label>Username<input name="user" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required autofocus></label>
+  <label>Password<input name="pass" type="password" autocomplete="current-password" required></label>
+  <p id="err" role="alert"></p>
+  <button>Sign in</button>
+</form>
+<script>
+const e=new URLSearchParams(location.search).get("e");
+document.getElementById("err").textContent=e==="locked"?"Too many wrong attempts. Wait a moment and try again.":e?"Wrong username or password.":"";
+</script>
+</body>
+</html>

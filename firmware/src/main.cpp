@@ -706,10 +706,67 @@ static void stateJson(String& out) {
   d["net"]["sta_connected"] = WiFi.status() == WL_CONNECTED; d["net"]["mqtt_connected"] = mqttUp();
   serializeJson(d, out);
 }
+// ---- login: own page + session cookie (the browser's basic-auth popup cannot be styled)
+struct Session { char tok[33]; uint32_t ms; };
+static Session sessions[SESSION_SLOTS];
+static const uint32_t SESSION_MS = SESSION_DAYS * 86400000UL;
+static uint8_t loginFails = 0;
+static bool lockActive = false;
+static uint32_t lockedAt = 0;
+
+static bool sameStr(const char* a, const char* b) {      // no early exit on the first differing char
+  size_t n = strlen(a);
+  if (n != strlen(b)) return false;
+  uint8_t d = 0;
+  for (size_t i = 0; i < n; i++) d |= a[i] ^ b[i];
+  return d == 0;
+}
+static Session* findSession() {
+  String c = web.header("Cookie");
+  int i = c.indexOf("ice_sess=");
+  if (i < 0) return nullptr;
+  String t = c.substring(i + 9, i + 9 + 32);
+  if (t.length() != 32) return nullptr;
+  uint32_t now = millis();
+  for (auto& s : sessions)
+    if (s.tok[0] && now - s.ms < SESSION_MS && sameStr(s.tok, t.c_str())) return &s;
+  return nullptr;
+}
+static void redirect(const char* to, int code = 302) {
+  web.sendHeader("Location", to);
+  web.send(code, "text/plain", "");
+}
 static bool authed() {
-  if (web.authenticate(UI_USER, UI_PASS)) return true;
-  web.requestAuthentication();
+  if (findSession()) return true;
+  if (web.authenticate(UI_USER, UI_PASS)) return true;   // scripts can still use: curl -u user:pass
+  web.send(401, "text/plain", "login required");          // no WWW-Authenticate header -> no browser popup
   return false;
+}
+static void handleLogin() {
+  uint32_t now = millis();
+  if (lockActive && now - lockedAt < LOGIN_LOCKOUT_S * 1000UL) { redirect("/login?e=locked", 303); return; }
+  lockActive = false;
+  bool ok = sameStr(web.arg("user").c_str(), UI_USER);
+  ok = sameStr(web.arg("pass").c_str(), UI_PASS) && ok;
+  if (!ok) {
+    if (++loginFails >= LOGIN_MAX_FAILS) { loginFails = 0; lockActive = true; lockedAt = now; }
+    redirect("/login?e=wrong", 303);
+    return;
+  }
+  loginFails = 0;
+  Session* s = nullptr;                                   // free or expired slot, else the oldest one
+  for (auto& x : sessions) if (!x.tok[0] || now - x.ms >= SESSION_MS) { s = &x; break; }
+  if (!s) { s = &sessions[0]; for (auto& x : sessions) if (now - x.ms > now - s->ms) s = &x; }
+  for (int i = 0; i < 4; i++) snprintf(s->tok + i * 8, 9, "%08lx", (unsigned long)esp_random());
+  s->ms = now;
+  web.sendHeader("Set-Cookie", String("ice_sess=") + s->tok + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + String(SESSION_DAYS * 86400UL));
+  redirect("/", 303);
+}
+static void servePage(const char* gzPath) {
+  if (!LittleFS.exists(gzPath)) { web.send(200, "text/plain", "UI not uploaded. Run: pio run -t uploadfs (the /api endpoints work)."); return; }
+  File f = LittleFS.open(gzPath, "r");
+  web.streamFile(f, "text/html");
+  f.close();
 }
 static void sendState(int code = 200) { String s; stateJson(s); web.send(code, "application/json", s); }
 static bool bodyJson(JsonDocument& d) {
@@ -737,17 +794,21 @@ static void historyCsv() {
   web.sendContent("");
 }
 static void setupWeb() {
+  static const char* cookieHeader[] = {"Cookie"};
+  web.collectHeaders(cookieHeader, 1);
   web.on("/", HTTP_GET, []() {
-    if (!authed()) return;
-    if (!LittleFS.exists("/index.html.gz")) { web.send(200, "text/plain", "UI not uploaded. Run: pio run -t uploadfs (the /api endpoints work)."); return; }
-    File f = LittleFS.open("/index.html.gz", "r");
-    web.streamFile(f, "text/html");
-    f.close();
+    if (findSession()) servePage("/index.html.gz"); else redirect("/login");
   });
-  auto redirectToRoot = []() {
-    web.sendHeader("Location", "/");
-    web.send(302, "text/plain", "");
-  };
+  web.on("/login", HTTP_GET, []() {
+    if (findSession()) redirect("/"); else servePage("/login.html.gz");
+  });
+  web.on("/login", HTTP_POST, handleLogin);
+  web.on("/logout", HTTP_POST, []() {
+    if (Session* s = findSession()) s->tok[0] = 0;
+    web.sendHeader("Set-Cookie", "ice_sess=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    redirect("/login", 303);
+  });
+  auto redirectToRoot = []() { redirect("/"); };
   web.on("/generate_204", HTTP_GET, redirectToRoot);
   web.on("/hotspot-detect.html", HTTP_GET, redirectToRoot);
   web.on("/connecttest.txt", HTTP_GET, redirectToRoot);
