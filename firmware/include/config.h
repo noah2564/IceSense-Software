@@ -88,15 +88,14 @@
 #define FDC_TANK_L_UH             0.0   // TODO: populate with measured tank inductance to enable capacitance conversion
 #define FDC_TANK_C_PF             0.0   // TODO: populate parasitic/tank capacitance to enable capacitance conversion
 */
-#define FDC2214_RCOUNT_CH0        0x3056 // ~100 SPS single-channel @ fREF=20MHz: floor((9.9ms*20MHz - 4)/16) = 12374 (Eq. 5). Must be >= 0x0100
-#define FDC2214_SETTLECOUNT_CH0   0x000A // Eq. 4 gives 7.5 (-> 8) at 40MHz; datasheet uses 10 for margin
-#define FDC2214_CLOCK_DIVIDERS_CH0 0x2002 // FIN_SEL=b10 (/2, single-ended), FREF_DIVIDER=2 -> fREF=20MHz
-#define FDC2214_DRIVE_CURRENT_CH0 0x7800 // IDRIVE=01111b (0.146mA), ~1.68Vpk in TI's example; confirm on scope
-#define FDC2214_TANK_SETTINGS_VALID 0    // Set to 1 only after all four values above are measured/validated
-#define FDC2214_MUX_CONFIG_CH0    0x020D // Autoscan off; retain TI's required reserved/deglitch field values
-#define FDC2214_ERROR_CONFIG      0x0000 // No interrupt outputs; poll STATUS instead
-#define FDC_TANK_L_UH             18.0  // Datasheet reference tank (Bourns CMH322522-180KL)
-#define FDC_TANK_C_PF             33.0  // Parallel tank cap per Eq. 7 / Fig. 8-1; parasitics (~20pF) land in the computed C_SENSOR
+#define FDC2214_USE_EXTERNAL_CLKIN 1
+#define FDC2214_REFERENCE_CLOCK_HZ 40000000UL   // external oscillator on CLKIN
+#define FDC2214_CLOCK_DIVIDERS_CH0 0x1001       // FIN_SEL=01, FREF_DIVIDER=1 -> fREF=40 MHz
+#define FDC2214_RCOUNT_CH0         0x60AC       // ~100 SPS at 40 MHz; the old value assumed 20 MHz
+#define FDC_TANK_L_UH              18.5
+#define FDC_TANK_C_PF              39.0
+#define FDC2214_TANK_SETTINGS_VALID 1
+
 
 // ---- Sampling and detection window
 #define SAMPLE_RATE_HZ              10    // 10 Hz; MCP3426 one-shot at 14-bit is 60 SPS
