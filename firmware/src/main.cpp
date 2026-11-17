@@ -27,6 +27,7 @@
 
 #include "config.h"
 #include "fdc2214.h"
+#include "heater.h"
 #include "icedetect.h"
 #include "lm75b.h"
 #include "mcp3426.h"
@@ -51,9 +52,16 @@ using icedetect::State;
 static Preferences prefs;
 static WebServer web(80);
 static DNSServer dnsServer;
+
 static LM75B lm75(Wire, LM75B_I2C_ADDRESS);
+static LM75B lm75Sensor(Wire1, LM75_SENSOR_ADDRESS);
+static HeaterThermostat heater({HEATER_ENABLED != 0, HEATER_ON_BELOW_C, HEATER_OFF_ABOVE_C, HEATER_HARD_MAX_C,
+                                HEATER_MIN_ON_MS, HEATER_MIN_OFF_MS, HEATER_MAX_ON_MS, HEATER_COOLDOWN_MS});
+static volatile float gHeaterTempC = NAN;
+static volatile uint32_t gHeaterTempMs = 0;   // 0 = no reading yet
+
 static MCP3426 mcp3426(Wire, MCP3426_I2C_ADDRESS);
-static FDC2214 fdc2214(Wire1, FDC2214_I2C_ADDRESS_LOW, PIN_FDC2214_SD);
+static FDC2214 fdc2214(Wire1, FDC2214_I2C_ADDRESS_HIGH, PIN_FDC2214_SD);
 
 // ============================================================================ settings
 struct Settings {
@@ -235,6 +243,10 @@ static void initSensors() {
   if (!lm75.begin(I2C_TIMEOUT_MS, temperatureError))
     Serial.printf("LM75B 0x%02X init failed (%u)\n", LM75B_I2C_ADDRESS, (unsigned)temperatureError);
 
+  LM75B::Error sensorTempError;
+  if (!lm75Sensor.begin(I2C_TIMEOUT_MS, sensorTempError))
+    Serial.printf("Sensor-board LM75A 0x%02X init failed (%u)\n", LM75_SENSOR_ADDRESS, (unsigned)sensorTempError);
+
   bool mcpAddressFound = false;
   for (uint8_t address = MCP3426_I2C_ADDRESS; address <= 0x6F; address++) {
     Wire.beginTransmission(address);
@@ -254,13 +266,13 @@ static void initSensors() {
                             FDC2214_CONFIG_CH0, FDC2214_MUX_CONFIG_CH0,
                             FDC2214_ERROR_CONFIG, FDC2214_TANK_SETTINGS_VALID != 0};
   FDC2214::Error fdcError;
-  uint8_t fdcAddress = FDC2214_I2C_ADDRESS_LOW;
+  uint8_t fdcAddress = FDC2214_I2C_ADDRESS_HIGH;
   bool fdcReady = fdc2214.begin(fdcConfig, I2C_TIMEOUT_MS, FDC2214_POWERUP_DELAY_MS,
                                 FDC2214_RESET_DELAY_MS, fdcError);
   if (!fdcReady && fdcError != FDC2214::Error::NotConfigured &&
       fdcError != FDC2214::Error::InvalidConfig) {
-    fdcAddress = FDC2214_I2C_ADDRESS_HIGH;
-    fdc2214.setAddress(FDC2214_I2C_ADDRESS_HIGH);
+    fdcAddress = FDC2214_I2C_ADDRESS_LOW;
+    fdc2214.setAddress(FDC2214_I2C_ADDRESS_LOW);
     fdcReady = fdc2214.begin(fdcConfig, I2C_TIMEOUT_MS, FDC2214_POWERUP_DELAY_MS,
                              FDC2214_RESET_DELAY_MS, fdcError);
   }
@@ -325,10 +337,24 @@ static void sensorTick() {
   if (readResistiveVoltage(MCP3426_CHANNEL_BACK, backVolts)) stResVBack.add(backVolts);
   else windowResBackFailures++;
 
-  float temperatureC = NAN;
-  LM75B::Error temperatureError;
-  if (lm75.readTemperatureC(temperatureC, temperatureError)) stTemp.add(temperatureC);
-  else tempFailures++;
+  static uint32_t lastTempReadMs = 0;
+  static bool tempReadYet = false;
+  if (!tempReadYet || millis() - lastTempReadMs >= TEMP_READ_INTERVAL_MS) {
+    tempReadYet = true;
+    lastTempReadMs = millis();
+    float mainC = NAN, sensorC = NAN;
+    LM75B::Error mainError, sensorError;
+    const bool mainOk = lm75.readTemperatureC(mainC, mainError);
+    const bool sensorOk = lm75Sensor.readTemperatureC(sensorC, sensorError);
+    const bool detectorOk = (TEMP_SOURCE_DETECTOR == 0) ? mainOk : sensorOk;
+    const float detectorC = (TEMP_SOURCE_DETECTOR == 0) ? mainC : sensorC;
+    if (detectorOk) stTemp.add(detectorC); else tempFailures++;
+    const bool heaterOk = (TEMP_SOURCE_HEATER == 0) ? mainOk : sensorOk;
+    if (heaterOk) {
+      gHeaterTempC = (TEMP_SOURCE_HEATER == 0) ? mainC : sensorC;
+      gHeaterTempMs = millis();
+    }
+  }
 
   xSemaphoreTake(rollMux, portMAX_DELAY);
   rollCap[rollPos] = capOk ? (float)capCode : NAN;
@@ -361,8 +387,15 @@ static void sensorTask(void*) {
 // ============================================================================ outputs / history
 static void relayApply() {
   last.relayOn = cfg.relayEnabled && last.defrost;
-  digitalWrite(PIN_RELAY, last.relayOn ? RELAY_ACTIVE_LEVEL : !RELAY_ACTIVE_LEVEL);
+  if (PIN_RELAY >= 0) digitalWrite(PIN_RELAY, last.relayOn ? RELAY_ACTIVE_LEVEL : !RELAY_ACTIVE_LEVEL);
 }
+static void heaterTick(uint32_t now) {
+  const uint32_t sampleMs = gHeaterTempMs;
+  const bool valid = sampleMs != 0 && (uint32_t)(now - sampleMs) <= HEATER_SENSOR_TIMEOUT_MS;
+  const bool on = heater.update(now, valid, valid ? gHeaterTempC : NAN);
+  digitalWrite(PIN_HEATER, on ? HEATER_ACTIVE_LEVEL : !HEATER_ACTIVE_LEVEL);
+}
+
 static void histPush(const Hist& h) {
   hist[(histHead + histN) % HISTORY_LEN] = h;
   if (histN < HISTORY_LEN) histN++; else histHead = (histHead + 1) % HISTORY_LEN;
@@ -701,6 +734,10 @@ static void stateJson(String& out) {
   d["baseline"]["captured"] = !isnan(cfg.capBase) && cfg.capBase > 0;
   d["baseline"]["cap_counts"] = isnan(cfg.capBase) ? 0.0 : (double)cfg.capBase;
   d["relay"]["enabled"] = cfg.relayEnabled; d["relay"]["on"] = last.relayOn;
+
+  d["heater"]["on"] = heater.isOn();
+  if (gHeaterTempMs != 0) d["heater"]["temp_c"] = rnd(gHeaterTempC, 2);
+
   JsonObject pr = d["params"].to<JsonObject>();
   for (int i = 0; i < NPARAMS; i++) pr[PARAMS[i].name] = paramGet(det.params(), PARAMS[i]);
   d["net"]["sta_connected"] = WiFi.status() == WL_CONNECTED; d["net"]["mqtt_connected"] = mqttUp();
@@ -955,8 +992,14 @@ static void serviceNetwork(uint32_t now) {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  pinMode(PIN_RELAY, OUTPUT);
-  digitalWrite(PIN_RELAY, !RELAY_ACTIVE_LEVEL);          // relay open until settings say otherwise
+
+  if (PIN_RELAY >= 0) {
+    pinMode(PIN_RELAY, OUTPUT);
+    digitalWrite(PIN_RELAY, !RELAY_ACTIVE_LEVEL);
+  }
+  pinMode(PIN_HEATER, OUTPUT);
+  digitalWrite(PIN_HEATER, !HEATER_ACTIVE_LEVEL);
+
   prefs.begin("ice", false);
   loadSettings();
   bootCount = prefs.getUInt("boot", 0) + 1;
@@ -1000,6 +1043,7 @@ void setup() {
 
 void loop() {
   uint32_t now = millis();
+  heaterTick(now);
   dnsServer.processNextRequest();
   web.handleClient();
   serviceNetwork(now);

@@ -24,9 +24,16 @@ bool LM75B::readTemperatureC(float& temperatureC, Error& error) {
 }
 
 bool LM75B::codeToC(uint16_t rawRegister, float& temperatureC, Error& error) {
-  int16_t code = (int16_t)(rawRegister >> 5);
+  /*int16_t code = (int16_t)(rawRegister >> 5);
   if (code & 0x0400) code |= (int16_t)0xF800;
-  temperatureC = code * 0.125f;
+  temperatureC = code * 0.125f;*/
+
+  // LM75A: 9-bit two's complement, 0.5 degC per step; lower bits are undefined, so ignore them.
+  // Also reads LM75B correctly, just at 0.5 degC resolution.
+  int16_t code = (int16_t)(rawRegister >> 7);
+  if (code & 0x0100) code |= (int16_t)0xFE00;
+  temperatureC = code * 0.5f;
+  
   if (!isfinite(temperatureC)) {
     error = Error::InvalidData;
     return false;

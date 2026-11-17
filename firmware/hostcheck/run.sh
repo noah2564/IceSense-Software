@@ -11,7 +11,7 @@ for MQ in 1 0; do
   g++ -std=c++17 -O1 -Wall -Wextra -Wno-unused-parameter \
     -DARDUINOJSON_USE_LONG_LONG=1 -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -DCONFIG_IDF_TARGET_ESP32S3=1 -DMQTT_ENABLED=$MQ \
     -Istubs -I.deps/ArduinoJson/src -I../src -I../include -I../lib/icedetect \
-    -I../lib/lm75b -I../lib/mcp3426 -I../lib/fdc2214 \
+    -I../lib/lm75b -I../lib/mcp3426 -I../lib/fdc2214 -I../lib/heater \
     harness.cpp ../lib/icedetect/icedetect.cpp ../lib/lm75b/lm75b.cpp \
     ../lib/mcp3426/mcp3426.cpp ../lib/fdc2214/fdc2214.cpp -o .harness$MQ
 done

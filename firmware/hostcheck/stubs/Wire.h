@@ -41,7 +41,10 @@ class TwoWire {
   uint8_t requestFrom(uint8_t address, uint8_t count) {
     rxPos_ = rxCount_ = 0;
     if (!present(address) || address != address_) return 0;
-    if (secondBus_) fillFdc(count);
+    
+    if (secondBus_ && address == 0x48) fillLm75(count);   // sensor-board LM75A on the second bus
+    else if (secondBus_) fillFdc(count);
+
     else if (address == 0x48) fillLm75(count);
     else if (address == 0x68) fillMcp(count);
     return rxCount_;
@@ -50,10 +53,11 @@ class TwoWire {
   int read() { return rxPos_ < rxCount_ ? rx_[rxPos_++] : -1; }
 
  private:
-  bool present(uint8_t address) const {
-    if (secondBus_) return address == 0x2A || (address == 0x2B && g_fdc_high_address);
+    bool present(uint8_t address) const {
+    if (secondBus_) return address == 0x2A || (address == 0x2B && g_fdc_high_address) || address == 0x48;
     return address == 0x48 || address == 0x68;
   }
+  
   void push(uint8_t value) { if (rxCount_ < sizeof(rx_)) rx_[rxCount_++] = value; }
   void pushWord(uint16_t value) { push((uint8_t)(value >> 8)); push((uint8_t)value); }
   void fillLm75(uint8_t count) {

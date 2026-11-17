@@ -22,13 +22,35 @@
 #define PIN_SPARE_J6        3   // Spare screw-terminal GPIO; unused
 // WARNING: GPIO36 may be used by octal PSRAM on ESP32-S3-N8R8 modules. Keep this as one
 // obvious board-specific define so it can be changed if the module routing requires it.
-#define PIN_RELAY          36   // BS107 gate, active HIGH; gate pull-down keeps it off at boot
+#define PIN_HEATER         36   // BS107 gate -> heater, active HIGH; gate pull-down keeps it off at boot
+#define HEATER_ACTIVE_LEVEL HIGH
+#define PIN_RELAY          -1   // no defrost-request output on this board
 #define RELAY_ACTIVE_LEVEL HIGH
 
 // ---- I2C buses and device addresses
 #define I2C_CLOCK_HZ              400000UL
 #define I2C_TIMEOUT_MS            20
-#define LM75B_I2C_ADDRESS         0x48
+
+
+#define LM75B_I2C_ADDRESS         0x48  // main-board LM75 on Wire
+#define LM75_SENSOR_ADDRESS       0x48  // sensor-board LM75A on Wire1
+
+#define TEMP_SOURCE_DETECTOR      1     // 0 = main board (Wire), 1 = sensor board (Wire1)
+#define TEMP_SOURCE_HEATER        0
+#define TEMP_READ_INTERVAL_MS     300   // LM75A converts in up to 300 ms
+
+// TODO: placeholders, choose your own
+#define HEATER_ENABLED            1
+#define HEATER_ON_BELOW_C         5.0
+#define HEATER_OFF_ABOVE_C        8.0
+#define HEATER_HARD_MAX_C         35.0
+#define HEATER_MIN_ON_MS          30000UL
+#define HEATER_MIN_OFF_MS         30000UL
+#define HEATER_MAX_ON_MS          900000UL
+#define HEATER_COOLDOWN_MS        300000UL
+#define HEATER_SENSOR_TIMEOUT_MS  5000UL
+
+
 #define MCP3426_I2C_ADDRESS       0x68  // A0 variant is expected; verify with the boot I2C scan
 #define FDC2214_I2C_ADDRESS_LOW   0x2A
 #define FDC2214_I2C_ADDRESS_HIGH  0x2B
@@ -57,11 +79,14 @@
 #define FDC2214_POWERUP_DELAY_MS  2     // TI requires >=2 ms after SD goes LOW
 #define FDC2214_RESET_DELAY_MS    2     // Bound/reset settling wait
 #define FDC2214_CONVERSION_TIMEOUT_MS 20 // Bound sensor task latency so two 14-bit ADC reads fit under 100 ms
-#define FDC2214_REFERENCE_CLOCK_HZ 40000000UL // Internal reference-clock nominal rate
+#define FDC2214_REFERENCE_CLOCK_HZ 40000000UL // external oscillator on CLKIN
 #define FDC2214_DEBUG              0     // Set to 1 to log code, inferred frequency and tank capacitance
+/*
 #ifndef FDC2214_USE_EXTERNAL_CLKIN
 #define FDC2214_USE_EXTERNAL_CLKIN 0 // 0 selects the internal oscillator; set 1 only when CLKIN is provided
 #endif
+*/
+#define FDC2214_USE_EXTERNAL_CLKIN 1 // external 40 MHz oscillator on CLKIN
 #define FDC2214_CONFIG_ACTIVE_CHAN_CH0       (0u << 14)
 #define FDC2214_CONFIG_SLEEP_MODE_EN          (0u << 13)
 #define FDC2214_CONFIG_RESERVED_BIT12         (1u << 12)
@@ -88,13 +113,15 @@
 #define FDC_TANK_L_UH             0.0   // TODO: populate with measured tank inductance to enable capacitance conversion
 #define FDC_TANK_C_PF             0.0   // TODO: populate parasitic/tank capacitance to enable capacitance conversion
 */
-#define FDC2214_USE_EXTERNAL_CLKIN 1
-#define FDC2214_REFERENCE_CLOCK_HZ 40000000UL   // external oscillator on CLKIN
-#define FDC2214_CLOCK_DIVIDERS_CH0 0x1001       // FIN_SEL=01, FREF_DIVIDER=1 -> fREF=40 MHz
-#define FDC2214_RCOUNT_CH0         0x60AC       // ~100 SPS at 40 MHz; the old value assumed 20 MHz
-#define FDC_TANK_L_UH              18.5
-#define FDC_TANK_C_PF              39.0
+#define FDC2214_RCOUNT_CH0        0x60AC // ~100 SPS at fREF=40 MHz: (24748*16+4)/40 MHz = 9.9 ms. Must be >= 0x0100
+#define FDC2214_SETTLECOUNT_CH0   0x000A // datasheet value, margin over the computed ~8
+#define FDC2214_CLOCK_DIVIDERS_CH0 0x1001 // FIN_SEL=01 (differential, up to 8.75 MHz), FREF_DIVIDER=1 -> fREF=40 MHz
+#define FDC2214_DRIVE_CURRENT_CH0 0x7800 // IDRIVE=01111b; confirm amplitude on a scope
 #define FDC2214_TANK_SETTINGS_VALID 1
+#define FDC2214_MUX_CONFIG_CH0    0x020D // Autoscan off; TI's required reserved/deglitch field values
+#define FDC2214_ERROR_CONFIG      0x0000 // No interrupt outputs; poll STATUS instead
+#define FDC_TANK_L_UH             18.5
+#define FDC_TANK_C_PF             39.0
 
 
 // ---- Sampling and detection window
