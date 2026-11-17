@@ -77,6 +77,7 @@
                                                FDC2214_CONFIG_RESERVED_BIT10 | FDC2214_CONFIG_REF_CLK_SRC | \
                                                FDC2214_CONFIG_RESERVED_BIT8 | FDC2214_CONFIG_INTB_DIS | \
                                                FDC2214_CONFIG_HIGH_CURRENT_DRV | FDC2214_CONFIG_RESERVED_LOW)
+/*
 #define FDC2214_RCOUNT_CH0        0x0000 // TODO: calculate from actual tank and sample-rate requirements
 #define FDC2214_SETTLECOUNT_CH0   0x0000 // TODO: determine from actual tank settling time
 #define FDC2214_CLOCK_DIVIDERS_CH0 0x0000 // TODO: select FIN/FREF dividers from tank frequency
@@ -86,6 +87,16 @@
 #define FDC2214_ERROR_CONFIG      0x0000 // No interrupt outputs; poll STATUS instead
 #define FDC_TANK_L_UH             0.0   // TODO: populate with measured tank inductance to enable capacitance conversion
 #define FDC_TANK_C_PF             0.0   // TODO: populate parasitic/tank capacitance to enable capacitance conversion
+*/
+#define FDC2214_RCOUNT_CH0        0x3056 // ~100 SPS single-channel @ fREF=20MHz: floor((9.9ms*20MHz - 4)/16) = 12374 (Eq. 5). Must be >= 0x0100
+#define FDC2214_SETTLECOUNT_CH0   0x000A // Eq. 4 gives 7.5 (-> 8) at 40MHz; datasheet uses 10 for margin
+#define FDC2214_CLOCK_DIVIDERS_CH0 0x2002 // FIN_SEL=b10 (/2, single-ended), FREF_DIVIDER=2 -> fREF=20MHz
+#define FDC2214_DRIVE_CURRENT_CH0 0x7800 // IDRIVE=01111b (0.146mA), ~1.68Vpk in TI's example; confirm on scope
+#define FDC2214_TANK_SETTINGS_VALID 0    // Set to 1 only after all four values above are measured/validated
+#define FDC2214_MUX_CONFIG_CH0    0x020D // Autoscan off; retain TI's required reserved/deglitch field values
+#define FDC2214_ERROR_CONFIG      0x0000 // No interrupt outputs; poll STATUS instead
+#define FDC_TANK_L_UH             18.0  // Datasheet reference tank (Bourns CMH322522-180KL)
+#define FDC_TANK_C_PF             33.0  // Parallel tank cap per Eq. 7 / Fig. 8-1; parasitics (~20pF) land in the computed C_SENSOR
 
 // ---- Sampling and detection window
 #define SAMPLE_RATE_HZ              10    // 10 Hz; MCP3426 one-shot at 14-bit is 60 SPS
